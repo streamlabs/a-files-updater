@@ -25,6 +25,7 @@ struct update_parameters {
 	bool interactive = true;
 	bool restart_on_fail = false;
 	bool enable_removing_old_files = false;
+	std::string details;
 
 	~update_parameters()
 	{

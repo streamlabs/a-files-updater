@@ -37,6 +37,196 @@ const int ui_min_width = 400;
 
 bool update_completed = false;
 
+//MLH some stuff
+#define BTNUPDATE 100
+#define BTNLATER 101
+#define VERSIONEDIT 102
+const int cDlgWidth = 1000;
+const int cDlgMaxHeight = 1000;
+const float cDisplayBuffer = 1.4;
+const float cEditToDlgWidthRatio = 0.96;
+const float cMarginRatio = 0.02;
+const float cEditToDlgHeightRatio = 0.85;
+//end MLH
+
+//MLH adding dialog
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	switch (msg) {
+	case WM_CLOSE:
+		PostQuitMessage(0);
+		DestroyWindow(hwnd);
+		break;
+	case WM_COMMAND:
+		switch (LOWORD(wParam)) {
+		case BTNUPDATE:
+			PostQuitMessage(1);
+			DestroyWindow(hwnd);
+			break;
+		case BTNLATER:
+			PostQuitMessage(0);
+			DestroyWindow(hwnd);
+			break;
+		}
+		break;
+	default:
+		return DefWindowProc(hwnd, msg, wParam, lParam);
+	}
+	return 0;
+}
+
+bool PromptUser(HINSTANCE hInstance, int nCmdShow, const char *sVersion, const char *sDetails)
+{
+	WNDCLASSEX wndClass;
+	HWND dlgWnd;
+	MSG Msg;
+	HICON kevIcon = LoadIcon(GetModuleHandle(NULL), TEXT("AppIcon"));
+	LPCWSTR myClass = L"myWindowClass";
+	std::wstring updateBtnTxt = ConvertToUtf16WS(boost::locale::translate("Update Now"));
+	std::wstring remindBtnTxt = ConvertToUtf16WS(boost::locale::translate("Remind Me Later"));
+	std::wstring wDetails = ConvertToUtf16WS(boost::locale::translate(sDetails));
+	int dlgWidth = cDlgWidth;
+	int dlgHeight = cDlgMaxHeight;
+
+	//register the window class
+	wndClass.cbSize = sizeof(WNDCLASSEX);
+	wndClass.style = 0;
+	wndClass.lpfnWndProc = WndProc;
+	wndClass.cbClsExtra = 0;
+	wndClass.cbWndExtra = 0;
+	wndClass.hInstance = hInstance;
+	wndClass.hIcon = kevIcon;
+	wndClass.hCursor = LoadCursor(NULL, IDC_ARROW);
+	wndClass.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	wndClass.lpszMenuName = NULL;
+	wndClass.lpszClassName = myClass;
+	wndClass.hIconSm = kevIcon;
+	if (!RegisterClassEx(&wndClass)) {
+		return true; //update anyway if dialog fails
+	}
+
+	//create the font
+	LOGFONT lf = {0};
+	lf.lfHeight = 22;
+	lf.lfWidth = 0;
+	lf.lfEscapement = 0;
+	lf.lfOrientation = 0;
+	lf.lfWeight = FW_NORMAL;
+	lf.lfItalic = FALSE;
+	lf.lfUnderline = FALSE;
+	lf.lfStrikeOut = FALSE;
+	lf.lfCharSet = DEFAULT_CHARSET;
+	lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
+	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+	lf.lfQuality = CLEARTYPE_QUALITY;
+	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+	lstrcpy(lf.lfFaceName, L"Segoe UI");
+	HFONT myFont = CreateFontIndirect(&lf);
+
+	/*const int size = 10000;
+	wchar_t makeitlong[size + 1];
+	for (int i = 0; i < size; i++) {
+		makeitlong[i] = 'a';
+	}
+	makeitlong[size] = 0x00;*/
+
+	//set the initial width and height and make sure it's not larger than the screen resolution
+	int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+	int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+	if (dlgWidth >= screenWidth) {
+		dlgWidth = static_cast<int>(ceil(screenWidth * .75));
+	}
+	if (dlgHeight >= screenHeight) {
+		dlgHeight = static_cast<int>(ceil(screenHeight * .75));
+	}
+
+	//convert title/version string to wide char
+	std::string title = "Streamlabs Desktop Version ";
+	title.append(sVersion);
+	title.append(" Upgrade");
+	std::wstring wideTitle = ConvertToUtf16WS(boost::locale::translate(title.c_str()));
+
+	//create the window and set the font
+	dlgWnd = CreateWindowEx(DS_SETFOREGROUND, myClass, wideTitle.c_str(), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, CW_USEDEFAULT,
+			      CW_USEDEFAULT,
+			      dlgWidth, dlgHeight, NULL, NULL, hInstance, NULL);
+	if (dlgWnd == NULL)
+		return true; //update anyway if dialog fails
+	SendMessage(dlgWnd, WM_SETFONT, WPARAM(myFont), TRUE);
+
+	//calculate sizes - edit box will be slightly less than width of dialog - calculate how many rows * font height
+	//then adjust for max size of dialog
+	SIZE txtSize;
+	HDC hdc = GetDC(dlgWnd);
+	GetTextExtentPoint32W(hdc, wDetails.c_str(), wDetails.size(), &txtSize);
+	int ctrlSpacing = dlgWidth * cMarginRatio; //make sizing between controls same as margins b/c why not
+	int scrollBarSize = GetSystemMetrics(SM_CXHSCROLL);
+
+	//width of text / display width (% of total dialog width - scrollbar size) = num rows of text needed, * text height
+	int editHeight = static_cast<int>(ceil(txtSize.cx / ((dlgWidth * cEditToDlgWidthRatio) - scrollBarSize)) * (txtSize.cy * cDisplayBuffer));
+
+	//make sure we don't exceed to size of the dialog
+	int maxEditHeight = static_cast<int>(ceil(dlgHeight * cEditToDlgHeightRatio));
+	if (editHeight > maxEditHeight)
+		editHeight = maxEditHeight;
+
+	//buttons will be width of longer text and of equal size
+	GetTextExtentPoint32W(hdc, remindBtnTxt.c_str(), remindBtnTxt.size(), &txtSize);
+	float btnWidth = ceil(txtSize.cx * cDisplayBuffer);
+	float btnHeight = ceil(txtSize.cy * cDisplayBuffer);
+	ReleaseDC(dlgWnd, hdc);
+
+	//create the edit box to display the version info
+	HWND hwndVersionEdit = CreateWindow(L"EDIT", wDetails.c_str(), WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_READONLY,
+					    static_cast<int>(dlgWidth * cMarginRatio), ctrlSpacing,
+					    static_cast<int>(dlgWidth * cEditToDlgWidthRatio) - scrollBarSize, editHeight, dlgWnd,
+					    (HMENU)VERSIONEDIT, NULL, NULL);
+
+	//create the remind me later button
+	int firstButtonX = static_cast<int>(dlgWidth - (btnWidth * 2) - (dlgWidth * cMarginRatio * 2) - ctrlSpacing);
+	HWND hwndRemindMeButton = CreateWindow(L"BUTTON", remindBtnTxt.c_str(), WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, firstButtonX,
+					       editHeight + (ctrlSpacing * 2), btnWidth, btnHeight, dlgWnd, (HMENU)BTNLATER, NULL, NULL);
+	//create the update button
+	HWND hwndUpdateButton = CreateWindow(L"BUTTON", updateBtnTxt.c_str(), WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
+					     firstButtonX + btnWidth + ctrlSpacing, editHeight + (ctrlSpacing * 2), btnWidth, btnHeight, dlgWnd, (HMENU)BTNUPDATE,
+					     NULL, NULL);
+
+	//set fonts for all elements
+	SendMessage(hwndVersionEdit, WM_SETFONT, WPARAM(myFont), TRUE);
+	SendMessage(hwndUpdateButton, WM_SETFONT, WPARAM(myFont), TRUE);
+	SendMessage(hwndRemindMeButton, WM_SETFONT, WPARAM(myFont), TRUE);
+
+	//resize dialog based size of edit box + button + space above/between/below + title bar
+	//height = edit box + button + spacing above/between/below + title bar (no idea why 4 works and not 3 since it's 3 spaces)
+	RECT wndRect;
+	GetWindowRect(dlgWnd, &wndRect);
+	int sizeWeWant = (editHeight + btnHeight + (ctrlSpacing * 4) + GetSystemMetrics(SM_CYCAPTION));
+	if (!SetWindowPos(dlgWnd, NULL, wndRect.left, wndRect.top, dlgWidth, sizeWeWant, 0)) {
+		return true;
+	}
+
+	ShowWindow(dlgWnd, nCmdShow);
+	UpdateWindow(dlgWnd);
+
+	//process messages
+	while (GetMessage(&Msg, NULL, 0, 0) > 0) {
+		TranslateMessage(&Msg);
+		DispatchMessage(&Msg);
+	}
+
+	//cleanup
+	DeleteObject(myFont);
+	DestroyWindow(hwndRemindMeButton);
+	DestroyWindow(hwndUpdateButton);
+	DestroyWindow(hwndVersionEdit);
+
+	//true for update, false for remind me
+	return Msg.wParam;
+}
+//end MLH
+
+
 std::string getDefaultErrorMessage()
 {
 	return boost::locale::translate(
@@ -949,6 +1139,12 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	if (!update_completed) {
 		exit_on_init_fail(command_line);
 		return 0;
+	}
+
+	//everything checks out - prompt user to proceed
+	if (!PromptUser(hInstance, nCmdShow, params.version.c_str(), params.details.c_str())) {
+		handle_exit();
+		return 1;
 	}
 
 	auto client_deleter = [](struct update_client *client) { destroy_update_client(client); };
