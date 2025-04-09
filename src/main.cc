@@ -37,6 +37,351 @@ const int ui_min_width = 400;
 
 bool update_completed = false;
 
+//MLH defs/consts for dialog
+#define BTNUPDATE 100
+#define BTNLATER 101
+#define VERSIONEDIT 102
+#define LBLUPDATE 103
+#define LBLVERSION 104
+const int cDlgWidth = 1000;
+const int cDlgMaxHeight = 1000;
+const float cEditToDlgWidthRatio = 0.96;
+const float cMarginRatio = 0.02;
+const float cEditToDlgHeightRatio = 0.85;
+const float cIfDlgBiggerThanScreenRatio = 0.75;
+const int cRounding = 4;
+const int cButtonPadding = 2;
+const COLORREF cDlgColor = RGB(23, 36, 45);
+const COLORREF cEditBGColor = RGB(12, 17, 22);
+const COLORREF cRemindBtnColor = RGB(100, 100, 110);
+const COLORREF cUpdateBtnColor = RGB(128, 245, 210);
+const COLORREF cWhite = RGB(255, 255, 255);
+const COLORREF cBlack = RGB(0, 0, 0);
+
+//globals to handle dialog creation
+std::wstring gUpdateBtnTxt;
+std::wstring gRemindBtnTxt;
+HBRUSH gEditBGBrush;
+HBRUSH gDlgBrush;
+HBRUSH gRemindBtnBrush;
+HBRUSH gUpdateBtnBrush;
+int gButtonsDrawn = 0;
+//end MLH
+
+//MLH adding dialog
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	switch (msg) {
+	case WM_DRAWITEM: {
+		LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
+		//don't redraw buttons, causes weird rounding issues
+		if (gButtonsDrawn < 2) {
+			//add button color, font color, and text
+			if (pDIS->CtlID == BTNLATER) {
+				SetBkMode(pDIS->hDC, TRANSPARENT);
+				FillRect(pDIS->hDC, &pDIS->rcItem, gRemindBtnBrush);
+				SetTextColor(pDIS->hDC, cWhite);
+				DrawText(pDIS->hDC, gRemindBtnTxt.c_str(), gRemindBtnTxt.size(), &pDIS->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				gButtonsDrawn++;
+			} else if (pDIS->CtlID == BTNUPDATE) {
+				SetBkMode(pDIS->hDC, TRANSPARENT);
+				FillRect(pDIS->hDC, &pDIS->rcItem, gUpdateBtnBrush);
+				SetTextColor(pDIS->hDC, cBlack);
+				DrawText(pDIS->hDC, gUpdateBtnTxt.c_str(), gUpdateBtnTxt.size(), &pDIS->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				gButtonsDrawn++;
+			}
+		}
+		return TRUE;
+	}
+	case WM_CTLCOLORSTATIC: {
+		HDC hdc = (HDC)wParam;
+		int ctrl = GetDlgCtrlID((HWND)lParam);
+		if (ctrl == VERSIONEDIT) {
+			SetBkColor(hdc, cEditBGColor);
+			SetTextColor(hdc, cWhite);
+			return (LRESULT)gEditBGBrush;
+		} else if (ctrl == LBLUPDATE) {
+			SetBkColor(hdc, cDlgColor);
+			SetTextColor(hdc, cUpdateBtnColor);
+			return (LRESULT)gDlgBrush;
+		} else if (ctrl == LBLVERSION) {
+			SetBkColor(hdc, cDlgColor);
+			SetTextColor(hdc, cWhite);
+			return (LRESULT)gDlgBrush;
+		}
+		return (LRESULT)0;
+	}
+	case WM_CLOSE:
+		PostQuitMessage(0);
+		DestroyWindow(hwnd);
+		break;
+	case WM_COMMAND:
+		switch (HIWORD(wParam)) {
+		case BN_CLICKED:
+			if (LOWORD(wParam) == BTNUPDATE) {
+				PostQuitMessage(1);
+			} else {
+				PostQuitMessage(0);
+			}
+			DestroyWindow(hwnd);
+			break;
+		default:
+			break;
+		}
+		break;
+	default:
+		return DefWindowProc(hwnd, msg, wParam, lParam);
+	}
+	return 0;
+}
+
+bool PromptUser(HINSTANCE hInstance, int nCmdShow, const char *pVersion, const char *pDetails)
+{
+	const wchar_t *wDash = L"-";
+	const wchar_t *wHash = L"#";
+	const wchar_t *wBullet = L"\r\n    \u2022 ";
+	const wchar_t *wBreak = L"\r\n  ";
+	std::wstring wVersion = ConvertToUtf16WS(boost::locale::translate(pVersion));
+	std::wstring wDisplayVersion = ConvertToUtf16WS(boost::locale::translate("Desktop version: "));
+	wDisplayVersion.insert(wDisplayVersion.size() - 1, wVersion); //account for null terminator
+	std::wstring wUpdateLabelTxt = ConvertToUtf16WS(boost::locale::translate("There's an update available to install!"));
+	std::wstring wDetails = ConvertToUtf16WS(boost::locale::translate(pDetails));
+	gUpdateBtnTxt = ConvertToUtf16WS(boost::locale::translate("Confirm and Upgrade"));
+	gRemindBtnTxt = ConvertToUtf16WS(boost::locale::translate("Remind Me Later"));
+
+	//tag to heading conversion
+	std::list<std::pair<std::wstring, std::wstring>> tagsToHeadings;
+	tagsToHeadings.push_back(std::make_pair(L"#hotfixes", L"Hotfix Changes"));
+	tagsToHeadings.push_back(std::make_pair(L"#features", L"New Features"));
+	tagsToHeadings.push_back(std::make_pair(L"#generalfixes", L"General Fixes"));
+
+	//format detail string: insert 2 breaks at start -> 1 to have heading on its own line, 1 for spacing, one after heading for spacing
+	int extraLines = 1; //to calculate height of edit box; start at 1 to add extra blank line at the end to look better
+	size_t replacePos = 0;
+	for (auto tagHeadingPair : tagsToHeadings) {
+		replacePos = wDetails.find(tagHeadingPair.first);
+		if (replacePos != std::wstring::npos) {
+			wDetails.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
+			wDetails.insert(replacePos, wBreak);
+			wDetails.insert(replacePos, wBreak);
+			wDetails.insert(replacePos + wcslen(wBreak) + wcslen(wBreak) + tagHeadingPair.second.size(), wBreak);
+			extraLines += 3;
+		}
+	}
+	//if # isn't followed by a known heading, leave as-is to display custom heading
+	int endHeading = 0;
+	replacePos = wDetails.find(wHash);
+	while (replacePos != std::wstring::npos) {
+		wDetails.insert(replacePos, wBreak);
+		wDetails.replace(replacePos + wcslen(wBreak), wcslen(wHash), wBreak);
+		extraLines++;
+		endHeading = wDetails.find(wDash, replacePos);
+		if (endHeading != std::wstring::npos) {
+			wDetails.insert(endHeading, wBreak);
+			extraLines++;
+		}
+		replacePos = wDetails.find(wHash, replacePos + wcslen(wBreak));
+	}
+	//replace '-' with end line + spacing + bullet + spacing
+	replacePos = wDetails.find(wDash);
+	while (replacePos != std::wstring::npos) {
+		wDetails.replace(replacePos, wcslen(wDash), wBullet);
+		extraLines++;
+		replacePos = wDetails.find(wDash, replacePos + wcslen(wBullet));
+	}
+
+	//register the window class
+	HICON kevIcon = LoadIcon(GetModuleHandle(NULL), TEXT("AppIcon"));
+	LPCWSTR myClass = L"myWindowClass";
+	gDlgBrush = CreateSolidBrush(RGB(23, 36, 45));
+	WNDCLASSEX wndClass;
+	wndClass.cbSize = sizeof(WNDCLASSEX);
+	wndClass.style = 0;
+	wndClass.lpfnWndProc = WndProc;
+	wndClass.cbClsExtra = 0;
+	wndClass.cbWndExtra = 0;
+	wndClass.hInstance = hInstance;
+	wndClass.hIcon = kevIcon;
+	wndClass.hCursor = LoadCursor(NULL, IDC_ARROW);
+	wndClass.hbrBackground = gDlgBrush;
+	wndClass.lpszMenuName = NULL;
+	wndClass.lpszClassName = myClass;
+	wndClass.hIconSm = kevIcon;
+	if (!RegisterClassEx(&wndClass)) {
+		return true; //update anyway if dialog fails
+	}
+
+	//create the font
+	LOGFONT lf = {0};
+	lf.lfHeight = 18;
+	lf.lfWidth = 0;
+	lf.lfEscapement = 0;
+	lf.lfOrientation = 0;
+	lf.lfWeight = FW_NORMAL;
+	lf.lfItalic = FALSE;
+	lf.lfUnderline = FALSE;
+	lf.lfStrikeOut = FALSE;
+	lf.lfCharSet = DEFAULT_CHARSET;
+	lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
+	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+	lf.lfQuality = CLEARTYPE_QUALITY;
+	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+	lstrcpy(lf.lfFaceName, L"Helvetica");//Segoe UI ");
+	HFONT myFont = CreateFontIndirect(&lf);
+
+	//larger font for label
+	lf.lfHeight = 28;
+	HFONT myFontLarge = CreateFontIndirect(&lf);
+
+	//smaller font for the version
+	lf.lfHeight = 15;
+	HFONT myFontSmall = CreateFontIndirect(&lf);
+
+	//set the initial width and height and make sure it's not larger than the screen resolution
+	int dlgWidth = cDlgWidth;
+	int dlgHeight = cDlgMaxHeight;
+	int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+	int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+	if (dlgWidth >= screenWidth) {
+		dlgWidth = static_cast<int>(ceil(screenWidth * cIfDlgBiggerThanScreenRatio));
+	}
+	if (dlgHeight >= screenHeight) {
+		dlgHeight = static_cast<int>(ceil(screenHeight * cIfDlgBiggerThanScreenRatio));
+	}
+
+	//convert title/version string to wide char
+	std::string title = "Streamlabs Desktop Version ";
+	title.append(pVersion);
+	title.append(" Upgrade");
+	std::wstring wideTitle = ConvertToUtf16WS(boost::locale::translate(title.c_str()));
+
+	//create the window and set the font
+	HWND dlgWnd = CreateWindowEx(DS_SETFOREGROUND, myClass, wideTitle.c_str(), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, CW_USEDEFAULT,
+				     CW_USEDEFAULT, dlgWidth, dlgHeight, NULL, NULL, hInstance, NULL);
+	if (dlgWnd == NULL)
+		return true; //update anyway if dialog fails
+	SendMessage(dlgWnd, WM_SETFONT, WPARAM(myFont), TRUE);
+
+	//calculate sizes - edit box will be slightly less than width of dialog - calculate how many rows * font height
+	//then adjust for max size of dialog
+	int margin = dlgWidth * cMarginRatio;
+	int ctrlSpacing = dlgWidth * cMarginRatio; //make sizing between controls same as margins b/c why not
+	int scrollBarWidth = GetSystemMetrics(SM_CXVSCROLL);
+	int runningHeight = margin;
+	SIZE txtSizeNormal;
+	HDC hdc = GetDC(dlgWnd);
+	HGDIOBJ origObject = SelectObject(hdc, myFont);
+	GetTextExtentPoint32W(hdc, wDetails.c_str(), wDetails.size(), &txtSizeNormal);
+	SelectObject(hdc, origObject);
+
+	//width of text / display width (% of total dialog width - scrollbar width) = num rows of text needed, * text height
+	int editWidth = dlgWidth * cEditToDlgWidthRatio;
+	int editHeight = static_cast<int>((ceil((float)txtSizeNormal.cx / (editWidth - scrollBarWidth)) + extraLines) * txtSizeNormal.cy);
+
+	//make sure we don't exceed to size of the dialog
+	int maxEditHeight = static_cast<int>(ceil(dlgHeight * cEditToDlgHeightRatio));
+	if (editHeight > maxEditHeight)
+		editHeight = maxEditHeight;
+
+	//buttons will be width of longer text plus some padding for aesthetics and of equal size
+	if (gRemindBtnTxt.size() > gUpdateBtnTxt.size()) {
+		GetTextExtentPoint32W(hdc, gRemindBtnTxt.c_str(), gRemindBtnTxt.size(), &txtSizeNormal);
+	} else {
+		GetTextExtentPoint32W(hdc, gUpdateBtnTxt.c_str(), gRemindBtnTxt.size(), &txtSizeNormal);
+	}
+	int btnWidth = txtSizeNormal.cx * cButtonPadding;	
+	int btnHeight = txtSizeNormal.cy * cButtonPadding;
+	ReleaseDC(dlgWnd, hdc);
+
+	//create label for new update, including color (same as dialog) and calculating size needed based on text
+	HWND hwndUpdateLabel =
+		CreateWindow(L"STATIC", wUpdateLabelTxt.c_str(), WS_VISIBLE | WS_CHILD, margin, runningHeight, 0, 0, dlgWnd, (HMENU)LBLUPDATE, NULL, NULL);
+	SendMessage(hwndUpdateLabel, WM_SETFONT, WPARAM(myFontLarge), TRUE);
+	SIZE txtSizeLarge;
+	hdc = GetDC(hwndUpdateLabel);
+	origObject = SelectObject(hdc, myFontLarge);
+	GetTextExtentPoint32W(hdc, wUpdateLabelTxt.c_str(), wUpdateLabelTxt.size(), &txtSizeLarge);
+	SelectObject(hdc, origObject);
+	SetWindowPos(hwndUpdateLabel, NULL, margin, runningHeight, txtSizeLarge.cx, txtSizeLarge.cy, 0);
+	ReleaseDC(hwndUpdateLabel, hdc);
+	runningHeight += txtSizeLarge.cy + ctrlSpacing;
+
+	//create label for new version, calculating size needed based on text
+	HWND hwndVersionLabel = CreateWindow(L"STATIC", wDisplayVersion.c_str(), WS_VISIBLE | WS_CHILD, margin, runningHeight - (ctrlSpacing / 2), 0, 0, dlgWnd,
+					     (HMENU)LBLVERSION, NULL, NULL);
+	SendMessage(hwndVersionLabel, WM_SETFONT, WPARAM(myFontSmall), TRUE);
+	SIZE txtSizeSmall;
+	hdc = GetDC(hwndVersionLabel);
+	origObject = SelectObject(hdc, myFontSmall);
+	GetTextExtentPoint32W(hdc, wDisplayVersion.c_str(), wDisplayVersion.size(), &txtSizeSmall);
+	SelectObject(hdc, origObject);
+	SetWindowPos(hwndVersionLabel, NULL, margin, runningHeight - (ctrlSpacing / 2), txtSizeSmall.cx, txtSizeSmall.cy, 0);
+	ReleaseDC(hwndVersionLabel, hdc);
+	runningHeight += txtSizeSmall.cy; //no spacing b/c split the spacing calculated after update label in half b/c text is small
+
+	//create the edit box to display the version info
+	gEditBGBrush = CreateSolidBrush(cEditBGColor);
+	HWND hwndVersionEdit = CreateWindow(L"EDIT", wDetails.c_str(), WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_READONLY, margin,
+					    runningHeight, static_cast<int>(dlgWidth * cEditToDlgWidthRatio) - scrollBarWidth, editHeight, dlgWnd,
+					    (HMENU)VERSIONEDIT, NULL, NULL);
+	SendMessage(hwndVersionEdit, WM_SETFONT, WPARAM(myFont), TRUE);
+	runningHeight += editHeight + ctrlSpacing;
+
+	//create the remind me later button
+	gRemindBtnBrush = CreateSolidBrush(cRemindBtnColor);
+	int firstButtonX = static_cast<int>(dlgWidth - (btnWidth * 2) - (margin * 2) - ctrlSpacing);
+	HWND hwndRemindMeButton = CreateWindow(L"BUTTON", gRemindBtnTxt.c_str(), WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_OWNERDRAW,
+					       firstButtonX, runningHeight, btnWidth, btnHeight, dlgWnd, (HMENU)BTNLATER, NULL, NULL);
+	SendMessage(hwndRemindMeButton, WM_SETFONT, WPARAM(myFont), TRUE);
+
+	//create the update button
+	gUpdateBtnBrush = CreateSolidBrush(cUpdateBtnColor);
+	HWND hwndUpdateButton = CreateWindow(L"BUTTON", gUpdateBtnTxt.c_str(), WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW,
+					     firstButtonX + btnWidth + ctrlSpacing, runningHeight, btnWidth, btnHeight, dlgWnd, (HMENU)BTNUPDATE, NULL, NULL);
+	SendMessage(hwndUpdateButton, WM_SETFONT, WPARAM(myFont), TRUE);
+	runningHeight += btnHeight + ctrlSpacing;
+
+	//center and resize dialog
+	int sizeWeWant = runningHeight + ctrlSpacing + GetSystemMetrics(SM_CYCAPTION);
+	if (!SetWindowPos(dlgWnd, HWND_TOPMOST, (screenWidth - dlgWidth) / 2, (screenHeight - sizeWeWant) / 2, dlgWidth, sizeWeWant, 0)) {
+		return true;
+	}
+
+	//display the window
+	ShowWindow(dlgWnd, nCmdShow);
+	UpdateWindow(dlgWnd);
+
+	//make the buttons rounded
+	HRGN rgnRemind = CreateRoundRectRgn(0, 0, btnWidth, btnHeight, cRounding, cRounding);
+	SetWindowRgn(hwndRemindMeButton, rgnRemind, TRUE);
+	HRGN rgnUpdate = CreateRoundRectRgn(0, 0, btnWidth, btnHeight, cRounding, cRounding);
+	SetWindowRgn(hwndUpdateButton, rgnUpdate, TRUE);
+
+	//process messages
+	MSG Msg;
+	while (GetMessage(&Msg, NULL, 0, 0) > 0) {
+		TranslateMessage(&Msg);
+		DispatchMessage(&Msg);
+	}
+
+	//cleanup
+	DeleteObject(gDlgBrush);
+	DeleteObject(gEditBGBrush);
+	DeleteObject(gRemindBtnBrush);
+	DeleteObject(gUpdateBtnBrush);
+	DeleteObject(myFont);
+	DeleteObject(myFontSmall);
+	DeleteObject(myFontLarge);
+	DeleteObject(rgnRemind);
+	DeleteObject(rgnUpdate);
+
+	//true for update, false for remind me
+	return Msg.wParam;
+}
+
+
+//end MLH
+
 std::string getDefaultErrorMessage()
 {
 	return boost::locale::translate(
@@ -949,6 +1294,12 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	if (!update_completed) {
 		exit_on_init_fail(command_line);
 		return 0;
+	}
+
+	//everything checks out - prompt user to proceed
+	if (!PromptUser(hInstance, nCmdShow, params.version.c_str(), params.details.c_str())) {
+		handle_exit();
+		return 1;
 	}
 
 	auto client_deleter = [](struct update_client *client) { destroy_update_client(client); };
