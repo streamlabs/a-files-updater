@@ -1060,6 +1060,12 @@ void update_http_request<http::dynamic_body, true>::handle_response_body(boost::
 		auto &body = response_parser.get().body();
 
 		for (auto iter = asio::buffer_sequence_begin(body.data()); iter != asio::buffer_sequence_end(body.data()); ++iter) {
+			if ((*iter).size() > asio::buffer_size(body.data())) {
+				delete file_ctx;
+				std::string msg = std::string("Failed to recieve file body correctly. for : ") + target;
+				handle_download_error(boost::asio::error::basic_errors::connection_aborted, msg);
+				return;
+			}
 			file_ctx->output_chain.write((const char *)(*iter).data(), (*iter).size());
 		}
 

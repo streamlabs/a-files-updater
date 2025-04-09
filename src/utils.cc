@@ -107,6 +107,9 @@ LPWSTR ConvertToUtf16LP(const char *from, int *from_size)
 bool is_system_folder(const fs::path &path)
 {
 	DWORD fileAttributes = GetFileAttributes(path.c_str());
+	if (fileAttributes == INVALID_FILE_ATTRIBUTES) {
+		return false;
+	}
 	return fileAttributes & FILE_ATTRIBUTE_SYSTEM;
 }
 
