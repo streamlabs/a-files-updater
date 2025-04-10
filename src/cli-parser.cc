@@ -176,10 +176,12 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	struct arg_lit *restart_arg = arg_lit0(NULL, "restart-after-fail", "Start Streamlabs Desktop after update fail with option to skip update");
 
+	struct arg_str *details_arg = arg_str1("d", "details", "<details>", "The details of the update");
+
 	struct arg_end *end_arg = arg_end(255);
 
-	void *arg_table[] = {help_arg,     dump_args_arg, force_arg, base_uri_arg,    app_dir_arg, exec_arg, cwd_arg,
-			     temp_dir_arg, version_arg,   pids_arg,  interactive_arg, restart_arg, end_arg};
+	void *arg_table[] = {help_arg,     dump_args_arg, force_arg, base_uri_arg,    app_dir_arg, exec_arg,    cwd_arg,
+			     temp_dir_arg, version_arg,   pids_arg,  interactive_arg, restart_arg, details_arg, end_arg};
 
 	const int arg_table_sz = sizeof(arg_table) / sizeof(arg_table[0]);
 
@@ -187,7 +189,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	/* We need type information to dump parameters generically */
 	enum arg_type arg_table_types[arg_table_sz] = {ARG_LITERAL, ARG_LITERAL, ARG_LITERAL, ARG_STRING,  ARG_STRING,  ARG_STRING, ARG_STRING,
-						       ARG_STRING,  ARG_STRING,  ARG_INTEGER, ARG_INTEGER, ARG_LITERAL, ARG_END};
+						       ARG_STRING,  ARG_STRING,  ARG_INTEGER, ARG_INTEGER, ARG_LITERAL, ARG_STRING, ARG_END};
 
 	/* Here we assume that stdout is setup correctly, otherwise --help is pointless */
 	if (help_arg->count > 0) {
@@ -295,6 +297,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	params->pids = make_vector_from_arg(pids_arg);
 	params->version.assign(version_arg->sval[0]);
+	params->details.assign(details_arg->sval[0]);
 
 	if (interactive_arg->count > 0) {
 		params->interactive = interactive_arg->ival[0];
