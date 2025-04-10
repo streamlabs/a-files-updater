@@ -94,6 +94,10 @@ struct callbacks_impl : public install_callbacks,
 	HWND kill_button{NULL};
 	HWND continue_button{NULL};
 	HWND cancel_button{NULL};
+	std::wstring update_btn_label;
+	std::wstring remind_btn_label;
+	std::wstring continue_label;
+	std::wstring cancel_label;
 
 	HFONT main_font{NULL};
 	RECT progress_label_rect{0};
@@ -116,6 +120,7 @@ struct callbacks_impl : public install_callbacks,
 	bool should_continue{false};
 	bool notify_restart{false};
 	bool finished_downloading{false};
+	bool prompting{false};
 	LPCWSTR label_format{L"Downloading {} of {} - {:.2f} MB/s"};
 
 	callbacks_impl(const callbacks_impl &) = delete;
@@ -164,6 +169,8 @@ struct callbacks_impl : public install_callbacks,
 	void update_file(std::string &filename) final {}
 	void update_finished(std::string &filename) final {}
 	void updater_complete() final {}
+
+	bool prompt_user(const char *pVersion, const char *pDetails);
 };
 
 callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
@@ -233,8 +240,10 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 	std::wstring checking_packages_label = ConvertToUtf16WS(boost::locale::translate("Checking packages..."));
 	std::wstring blockers_list_label = ConvertToUtf16WS(boost::locale::translate("Blockers list"));
 	std::wstring stop_all_label = ConvertToUtf16WS(boost::locale::translate("Stop all"));
-	std::wstring continue_label = ConvertToUtf16WS(boost::locale::translate("Continue"));
-	std::wstring cancel_label = ConvertToUtf16WS(boost::locale::translate("Cancel"));
+	continue_label = ConvertToUtf16WS(boost::locale::translate("Continue"));
+	cancel_label = ConvertToUtf16WS(boost::locale::translate("Cancel"));
+	update_btn_label = ConvertToUtf16WS(boost::locale::translate("Upgrade"));
+	remind_btn_label = ConvertToUtf16WS(boost::locale::translate("Later"));
 
 	progress_label = CreateWindow(WC_STATIC, checking_packages_label.c_str(), WS_CHILD | WS_VISIBLE, x_pos, ui_padding, x_size, ui_basic_height, frame,
 				      NULL, NULL, NULL);
@@ -761,6 +770,116 @@ void callbacks_impl::updater_start()
 	SetWindowTextW(progress_label, copying_label.c_str());
 }
 
+bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
+{
+	const wchar_t *wc_dash = L"-";
+	const wchar_t *wc_hash = L"#";
+	const wchar_t *wc_bullet = L"\r\n    \u2022 ";
+	const wchar_t *wc_break = L"\r\n  ";
+	std::wstring wc_version = ConvertToUtf16WS(boost::locale::translate(pVersion));
+	std::wstring wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available to install: "));
+	wc_label.insert(wc_label.size() - 1, wc_version); //account for null terminator
+	std::wstring wc_details = ConvertToUtf16WS(boost::locale::translate(pDetails));
+
+	//tag to heading conversion
+	std::list<std::pair<std::wstring, std::wstring>> tagsToHeadings;
+	tagsToHeadings.push_back(std::make_pair(L"#hotfixes", L"Hotfix Changes"));
+	tagsToHeadings.push_back(std::make_pair(L"#features", L"New Features"));
+	tagsToHeadings.push_back(std::make_pair(L"#generalfixes", L"General Fixes"));
+
+	//format detail string: insert 2 breaks at start -> 1 to have heading on its own line, 1 for spacing, one after heading for spacing
+	size_t replacePos = 0;
+	for (auto tagHeadingPair : tagsToHeadings) {
+		replacePos = wc_details.find(tagHeadingPair.first);
+		if (replacePos != std::wstring::npos) {
+			wc_details.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
+			if (replacePos != 0) {
+				wc_details.insert(replacePos, wc_break);
+				replacePos += +wcslen(wc_break);
+			}
+			wc_details.insert(replacePos, wc_break);
+			wc_details.insert(replacePos + wcslen(wc_break) + tagHeadingPair.second.size(), wc_break);
+		}
+	}
+	//if # isn't followed by a known heading, leave as-is to display custom heading
+	int endHeading = 0;
+	replacePos = wc_details.find(wc_hash);
+	while (replacePos != std::wstring::npos) {
+		wc_details.insert(replacePos, wc_break);
+		wc_details.replace(replacePos + wcslen(wc_break), wcslen(wc_hash), wc_break);
+		endHeading = wc_details.find(wc_dash, replacePos);
+		if (endHeading != std::wstring::npos) {
+			wc_details.insert(endHeading, wc_break);
+		}
+		replacePos = wc_details.find(wc_hash, replacePos + wcslen(wc_break));
+	}
+	//replace '-' with end line + spacing + bullet + spacing
+	replacePos = wc_details.find(wc_dash);
+	while (replacePos != std::wstring::npos) {
+		wc_details.replace(replacePos, wcslen(wc_dash), wc_bullet);
+		replacePos = wc_details.find(wc_dash, replacePos + wcslen(wc_bullet));
+	}
+	//line break at end to look nicer
+	wc_details.insert(wc_details.length(), wc_break);
+
+	prompting = true;
+	ShowWindow(frame, SW_SHOWNORMAL);
+	ShowWindow(progress_worker, SW_HIDE);
+	HDC hdc = GetDC(frame);
+	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
+
+	DrawText(hdc, wc_label.c_str(), -1, &progress_label_rect, DT_CALCRECT | DT_NOCLIP);
+	progress_label_rect.right -= progress_label_rect.left;
+	blockers_list_rect = {0};
+	DrawText(hdc, wc_details.c_str(), -1, &blockers_list_rect, DT_CALCRECT | DT_NOCLIP | DT_EDITCONTROL);
+
+	ReleaseDC(frame, hdc);
+	SelectObject(hdc, hfontOld);
+
+	ShowWindow(blockers_list, SW_SHOW);
+	ShowWindow(continue_button, SW_SHOW);
+	ShowWindow(cancel_button, SW_SHOW);
+	repostionUI();
+
+	SetWindowTextW(progress_label, wc_label.c_str());
+	SetWindowTextW(blockers_list, wc_details.c_str());
+	SetWindowTextW(continue_button, update_btn_label.c_str());
+	SetWindowTextW(cancel_button, remind_btn_label.c_str());
+
+	MSG msg;
+	bool shouldUpdate = false;
+	while (GetMessage(&msg, NULL, 0, 0)) {
+		if (!IsDialogMessage(frame, &msg)) {
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+		if (should_cancel) {
+			should_cancel = false;
+			shouldUpdate = false;
+			break;
+		}
+		if (should_continue) {
+			should_continue = false;
+			shouldUpdate = true;
+			break;
+		}
+	}
+
+	//reset UI elements
+	ShowWindow(frame, SW_HIDE);
+	ShowWindow(blockers_list, SW_HIDE);
+	ShowWindow(continue_button, SW_HIDE);
+	ShowWindow(cancel_button, SW_HIDE);
+	SetWindowTextW(blockers_list, L"");
+	SetWindowTextW(progress_label, L"");
+	SetWindowTextW(continue_button, continue_label.c_str());
+	SetWindowTextW(cancel_button, cancel_label.c_str());
+
+	prompting = false;
+	return shouldUpdate;
+}
+
+
 LRESULT CALLBACK ProgressLabelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	switch (msg) {
@@ -949,6 +1068,11 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	if (!update_completed) {
 		exit_on_init_fail(command_line);
 		return 0;
+	}
+
+	if (!cb_impl.prompt_user(params.version.c_str(), params.details.c_str())) {
+		handle_exit();
+		return 1;
 	}
 
 	auto client_deleter = [](struct update_client *client) { destroy_update_client(client); };
