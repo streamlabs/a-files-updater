@@ -315,8 +315,8 @@ bool update_client::check_disk_space()
 	std::error_code ec{};
 	bool notified = false;
 
-	uintmax_t app_dir_free_space_prev;
-	uintmax_t temp_dir_free_space_prev;
+	uintmax_t app_dir_free_space_prev = 0;
+	uintmax_t temp_dir_free_space_prev = 0;
 	while (true) {
 		uintmax_t app_dir_free_space = fs::space(params->app_dir, ec).available;
 		uintmax_t temp_dir_free_space = fs::space(params->temp_dir, ec).available;
@@ -367,8 +367,12 @@ void update_client::do_stuff()
 {
 	auto cb = [=](auto e, auto i) { this->handle_resolve(e, i); };
 
-	if (!check_disk_space())
+	if (!check_disk_space()) {
+		log_fatal("Update canceled during disk space check.");
+		client_events->error(boost::locale::translate("Update canceled during disk space check."), "Canceled");
+		reset_work_threads_guards();
 		return;
+	}
 
 	// [packageName] = { url, params }
 	for (auto &itr : install_packages)
@@ -378,6 +382,8 @@ void update_client::do_stuff()
 	check_resolve_timeout_callback_err({});
 
 	log_info("Ready to resolve cdn address \"%s\" and \"%s\" ", params->host.authority.c_str(), params->host.scheme.c_str());
+
+	downloader_events->downloader_preparing(false);
 
 	resolver.async_resolve(params->host.authority, params->host.scheme, cb);
 }
@@ -796,7 +802,7 @@ void update_client::start_downloading_files()
 	auto to_download = std::count_if(this->manifest.cbegin(), this->manifest.cend(),
 					 [](const auto &entry) { return !entry.second.remove_at_update && !entry.second.skip_update; });
 	log_info("Manifest cleaned and ready to download files. Files to download %d", to_download);
-	this->downloader_events->downloader_preparing();
+	this->downloader_events->downloader_preparing(true);
 	this->downloader_events->downloader_start(max_threads, to_download);
 
 	/* To make sure we only have `max` number of
@@ -883,7 +889,7 @@ void update_client::handle_manifest_result(manifest_request<manifest_body> *requ
 
 	log_info("Successfuly downloaded manifest. It has info about %d files", manifest.size());
 
-	this->downloader_events->downloader_preparing();
+	this->downloader_events->downloader_preparing(true);
 
 	wait_for_blockers.expires_from_now(boost::posix_time::seconds(3));
 	wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));

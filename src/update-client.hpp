@@ -29,7 +29,7 @@ struct install_callbacks {
  *            ↓
  * download_worker_finished -> downloader_complete */
 struct downloader_callbacks {
-	virtual void downloader_preparing() = 0;
+	virtual void downloader_preparing(bool connected) = 0;
 
 	virtual void downloader_start(int concurrent_requests, size_t num_files) = 0;
 
