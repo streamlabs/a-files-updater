@@ -133,7 +133,7 @@ struct callbacks_impl : public install_callbacks,
 	void success() final;
 	void error(const std::string &error, const std::string &error_type) final;
 
-	void downloader_preparing() final;
+	void downloader_preparing(bool connected) final;
 	void downloader_start(int num_threads, size_t num_files_) final;
 	void download_file(int thread_index, std::string &relative_path, size_t size);
 	void download_progress(int thread_index, size_t consumed, size_t accum) final;
@@ -387,12 +387,17 @@ void callbacks_impl::error(const std::string &error, const std::string &error_ty
 	PostMessage(frame, CUSTOM_ERROR_MSG, NULL, NULL);
 }
 
-void callbacks_impl::downloader_preparing()
+void callbacks_impl::downloader_preparing(bool connected)
 {
 	LONG_PTR data = GetWindowLongPtr(frame, GWLP_USERDATA);
 	auto ctx = reinterpret_cast<callbacks_impl *>(data);
 
-	std::wstring checking_label = ConvertToUtf16WS(boost::locale::translate("Checking local files..."));
+	std::wstring checking_label = L"";
+	if (connected) {
+		checking_label = ConvertToUtf16WS(boost::locale::translate("Checking local files..."));
+	} else {
+		checking_label = ConvertToUtf16WS(boost::locale::translate("Connecting to server..."));	
+	}
 
 	HDC hdc = GetDC(frame);
 	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
