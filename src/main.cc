@@ -794,7 +794,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 
 	//format detail string: insert 2 breaks at start -> 1 to have heading on its own line, 1 for spacing, one after heading for spacing
 	size_t replacePos = 0;
-	for (auto tagHeadingPair : tagsToHeadings) {
+	for (const auto &tagHeadingPair : tagsToHeadings) {
 		replacePos = wc_details.find(tagHeadingPair.first);
 		if (replacePos != std::wstring::npos) {
 			wc_details.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
