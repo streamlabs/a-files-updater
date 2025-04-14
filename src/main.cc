@@ -39,6 +39,7 @@ const COLORREF dlg_bg_color = RGB(23, 36, 45);
 const COLORREF edit_bg_color = RGB(12, 17, 22);
 const COLORREF gray_btn_color = RGB(100, 100, 110);
 const COLORREF kev_btn_color = RGB(128, 245, 210);
+const COLORREF disabled_gray_color = RGB(150, 150, 150);
 const COLORREF white_color = RGB(255, 255, 255);
 const COLORREF black_color = RGB(0, 0, 0);
 
@@ -1049,7 +1050,11 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			SetBkColor((HDC)wParam, kev_btn_color);
 			return (LRESULT)ctx->kev_btn_brush;
 		} else {
-			SetTextColor((HDC)wParam, white_color);
+			if ((!IsWindowEnabled((HWND)lParam) && ((HWND)lParam == ctx->continue_button))) {
+				SetTextColor((HDC)wParam, disabled_gray_color);
+			} else {
+				SetTextColor((HDC)wParam, white_color);
+			}
 			SetBkColor((HDC)wParam, gray_btn_color);
 			return (LRESULT)ctx->gray_btn_brush;
 		}
