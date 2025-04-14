@@ -230,6 +230,14 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	if (dump_args_arg->count > 0)
 		print_arg_table(arg_table, arg_table_types, arg_table_sz);
 
+	//if missing 'details' param ignore it
+	if (num_errors == 1)
+	{
+		arg_str *parent = (arg_str *)end_arg->parent[0];
+		if (strcmp(parent->hdr.shortopts, "d") == 0)
+			num_errors = 0;
+	}
+
 	if (num_errors > 0) {
 		arg_print_errors(params->log_file, end_arg, argv[0]);
 		goto parse_error;

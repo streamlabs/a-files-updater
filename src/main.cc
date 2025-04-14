@@ -819,50 +819,59 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	const wchar_t *wc_bullet = L"\r\n    \u2022 ";
 	const wchar_t *wc_break = L"\r\n  ";
 	std::wstring wc_version = ConvertToUtf16WS(boost::locale::translate(pVersion));
-	std::wstring wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available to install: "));
-	wc_label.insert(wc_label.size() - 1, wc_version); //account for null terminator
-	std::wstring wc_details = ConvertToUtf16WS(boost::locale::translate(pDetails));
 
-	//tag to heading conversion
-	std::list<std::pair<std::wstring, std::wstring>> tagsToHeadings;
-	tagsToHeadings.push_back(std::make_pair(L"#hotfixes", L"Hotfix Changes"));
-	tagsToHeadings.push_back(std::make_pair(L"#features", L"New Features"));
-	tagsToHeadings.push_back(std::make_pair(L"#generalfixes", L"General Fixes"));
+	//handle missing details
+	std::wstring wc_label = L"";
+	std::wstring wc_details = L"New version: "; 
+	if (strlen(pDetails) == 0) {
+		wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available. Would you like to install?"));
+		wc_details.append(wc_version.c_str());
+	} else {
+		wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available to install: "));
+		wc_label.insert(wc_label.size() - 1, wc_version); //account for null terminator
+		wc_details = ConvertToUtf16WS(boost::locale::translate(pDetails));
 
-	//format detail string: insert 2 breaks at start -> 1 to have heading on its own line, 1 for spacing, one after heading for spacing
-	size_t replacePos = 0;
-	for (const auto &tagHeadingPair : tagsToHeadings) {
-		replacePos = wc_details.find(tagHeadingPair.first);
-		if (replacePos != std::wstring::npos) {
-			wc_details.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
-			if (replacePos != 0) {
+		//tag to heading conversion
+		std::list<std::pair<std::wstring, std::wstring>> tagsToHeadings;
+		tagsToHeadings.push_back(std::make_pair(L"#hotfixes", L"Hotfix Changes"));
+		tagsToHeadings.push_back(std::make_pair(L"#features", L"New Features"));
+		tagsToHeadings.push_back(std::make_pair(L"#generalfixes", L"General Fixes"));
+
+		//format detail string: insert 2 breaks at start -> 1 to have heading on its own line, 1 for spacing, one after heading for spacing
+		size_t replacePos = 0;
+		for (const auto &tagHeadingPair : tagsToHeadings) {
+			replacePos = wc_details.find(tagHeadingPair.first);
+			if (replacePos != std::wstring::npos) {
+				wc_details.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
+				if (replacePos != 0) {
+					wc_details.insert(replacePos, wc_break);
+					replacePos += +wcslen(wc_break);
+				}
 				wc_details.insert(replacePos, wc_break);
-				replacePos += +wcslen(wc_break);
+				wc_details.insert(replacePos + wcslen(wc_break) + tagHeadingPair.second.size(), wc_break);
 			}
+		}
+		//if # isn't followed by a known heading, leave as-is to display custom heading
+		int endHeading = 0;
+		replacePos = wc_details.find(wc_hash);
+		while (replacePos != std::wstring::npos) {
 			wc_details.insert(replacePos, wc_break);
-			wc_details.insert(replacePos + wcslen(wc_break) + tagHeadingPair.second.size(), wc_break);
+			wc_details.replace(replacePos + wcslen(wc_break), wcslen(wc_hash), wc_break);
+			endHeading = wc_details.find(wc_dash, replacePos);
+			if (endHeading != std::wstring::npos) {
+				wc_details.insert(endHeading, wc_break);
+			}
+			replacePos = wc_details.find(wc_hash, replacePos + wcslen(wc_break));
 		}
-	}
-	//if # isn't followed by a known heading, leave as-is to display custom heading
-	int endHeading = 0;
-	replacePos = wc_details.find(wc_hash);
-	while (replacePos != std::wstring::npos) {
-		wc_details.insert(replacePos, wc_break);
-		wc_details.replace(replacePos + wcslen(wc_break), wcslen(wc_hash), wc_break);
-		endHeading = wc_details.find(wc_dash, replacePos);
-		if (endHeading != std::wstring::npos) {
-			wc_details.insert(endHeading, wc_break);
+		//replace '-' with end line + spacing + bullet + spacing
+		replacePos = wc_details.find(wc_dash);
+		while (replacePos != std::wstring::npos) {
+			wc_details.replace(replacePos, wcslen(wc_dash), wc_bullet);
+			replacePos = wc_details.find(wc_dash, replacePos + wcslen(wc_bullet));
 		}
-		replacePos = wc_details.find(wc_hash, replacePos + wcslen(wc_break));
+		//line break at end to look nicer
+		wc_details.insert(wc_details.length(), wc_break);
 	}
-	//replace '-' with end line + spacing + bullet + spacing
-	replacePos = wc_details.find(wc_dash);
-	while (replacePos != std::wstring::npos) {
-		wc_details.replace(replacePos, wcslen(wc_dash), wc_bullet);
-		replacePos = wc_details.find(wc_dash, replacePos + wcslen(wc_bullet));
-	}
-	//line break at end to look nicer
-	wc_details.insert(wc_details.length(), wc_break);
 
 	prompting = true;
 	ShowWindow(frame, SW_SHOWNORMAL);
