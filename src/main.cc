@@ -170,7 +170,7 @@ struct callbacks_impl : public install_callbacks,
 	void update_finished(std::string &filename) final {}
 	void updater_complete() final {}
 
-	bool prompt_user(const char *pVersion);
+	bool prompt_user(const char *pVersion, const char *pDetails);
 };
 
 callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
@@ -325,6 +325,10 @@ void callbacks_impl::repostionUI()
 	frame_h += progress_label_rect.bottom + ui_padding;
 
 	if (IsWindowVisible(blockers_list)) {
+		//if blockers_list has so much text that it exceeds screen height, readjust so it's not more than 75% of screen height
+		if ((frame_h + blockers_list_rect.bottom) > screen_height) {
+			blockers_list_rect.bottom -= ((frame_h + blockers_list_rect.bottom) - static_cast<int>(ceil(screen_height * 0.75)));
+		}
 		SetWindowPos(blockers_list, 0, ui_padding, frame_h, main_w, blockers_list_rect.bottom, SWP_ASYNCWINDOWPOS);
 		frame_h += blockers_list_rect.bottom + ui_padding;
 	}
@@ -351,7 +355,8 @@ void callbacks_impl::repostionUI()
 
 	frame_h += (winRect.bottom - winRect.top) - clientRect.bottom;
 	frame_w += (winRect.right - winRect.left) - clientRect.right;
-	SetWindowPos(frame, 0, 0, 0, frame_w, frame_h, SWP_NOMOVE | SWP_NOREPOSITION | SWP_ASYNCWINDOWPOS);
+	//adjust window to the middle of the screen
+	SetWindowPos(frame, 0, (screen_width - frame_w) / 2, (screen_height - frame_h) / 2, frame_w, frame_h, SWP_NOREPOSITION | SWP_ASYNCWINDOWPOS);
 }
 
 callbacks_impl::~callbacks_impl() {}
@@ -775,14 +780,66 @@ void callbacks_impl::updater_start()
 	SetWindowTextW(progress_label, copying_label.c_str());
 }
 
-bool callbacks_impl::prompt_user(const char *pVersion)
+bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 {
 	const wchar_t *wc_dash = L"-";
 	const wchar_t *wc_hash = L"#";
 	const wchar_t *wc_bullet = L"\r\n    \u2022 ";
 	const wchar_t *wc_break = L"\r\n  ";
 	std::wstring wc_version = ConvertToUtf16WS(boost::locale::translate(pVersion));
-	std::wstring wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available. Would you like to install?"));
+
+	//handle missing details
+	std::wstring wc_label = L"";
+	std::wstring wc_details = L"New version: "; 
+	if (strlen(pDetails) == 0) {
+		wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available. Would you like to install?"));
+		wc_details.append(wc_version.c_str());
+	} else {
+		wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available to install: "));
+		wc_label.insert(wc_label.size() - 1, wc_version); //account for null terminator
+		wc_details = ConvertToUtf16WS(boost::locale::translate(pDetails));
+
+		//tag to heading conversion
+		std::list<std::pair<std::wstring, std::wstring>> tagsToHeadings;
+		tagsToHeadings.push_back(std::make_pair(L"#hotfixes", L"Hotfix Changes"));
+		tagsToHeadings.push_back(std::make_pair(L"#features", L"New Features"));
+		tagsToHeadings.push_back(std::make_pair(L"#generalfixes", L"General Fixes"));
+
+		//format detail string: insert 2 breaks at start -> 1 to have heading on its own line, 1 for spacing, one after heading for spacing
+		size_t replacePos = 0;
+		for (const auto &tagHeadingPair : tagsToHeadings) {
+			replacePos = wc_details.find(tagHeadingPair.first);
+			if (replacePos != std::wstring::npos) {
+				wc_details.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
+				if (replacePos != 0) {
+					wc_details.insert(replacePos, wc_break);
+					replacePos += +wcslen(wc_break);
+				}
+				wc_details.insert(replacePos, wc_break);
+				wc_details.insert(replacePos + wcslen(wc_break) + tagHeadingPair.second.size(), wc_break);
+			}
+		}
+		//if # isn't followed by a known heading, leave as-is to display custom heading
+		int endHeading = 0;
+		replacePos = wc_details.find(wc_hash);
+		while (replacePos != std::wstring::npos) {
+			wc_details.insert(replacePos, wc_break);
+			wc_details.replace(replacePos + wcslen(wc_break), wcslen(wc_hash), wc_break);
+			endHeading = wc_details.find(wc_dash, replacePos);
+			if (endHeading != std::wstring::npos) {
+				wc_details.insert(endHeading, wc_break);
+			}
+			replacePos = wc_details.find(wc_hash, replacePos + wcslen(wc_break));
+		}
+		//replace '-' with end line + spacing + bullet + spacing
+		replacePos = wc_details.find(wc_dash);
+		while (replacePos != std::wstring::npos) {
+			wc_details.replace(replacePos, wcslen(wc_dash), wc_bullet);
+			replacePos = wc_details.find(wc_dash, replacePos + wcslen(wc_bullet));
+		}
+		//line break at end to look nicer
+		wc_details.insert(wc_details.length(), wc_break);
+	}
 
 	prompting = true;
 	ShowWindow(frame, SW_SHOWNORMAL);
@@ -793,7 +850,7 @@ bool callbacks_impl::prompt_user(const char *pVersion)
 	DrawText(hdc, wc_label.c_str(), -1, &progress_label_rect, DT_CALCRECT | DT_NOCLIP);
 	progress_label_rect.right -= progress_label_rect.left;
 	blockers_list_rect = {0};
-	DrawText(hdc, wc_version.c_str(), -1, &blockers_list_rect, DT_CALCRECT | DT_NOCLIP | DT_EDITCONTROL);
+	DrawText(hdc, wc_details.c_str(), -1, &blockers_list_rect, DT_CALCRECT | DT_NOCLIP | DT_EDITCONTROL);
 
 	ReleaseDC(frame, hdc);
 	SelectObject(hdc, hfontOld);
@@ -804,7 +861,7 @@ bool callbacks_impl::prompt_user(const char *pVersion)
 	repostionUI();
 
 	SetWindowTextW(progress_label, wc_label.c_str());
-	SetWindowTextW(blockers_list, wc_version.c_str());
+	SetWindowTextW(blockers_list, wc_details.c_str());
 	SetWindowTextW(continue_button, update_btn_label.c_str());
 	SetWindowTextW(cancel_button, remind_btn_label.c_str());
 
@@ -1032,7 +1089,7 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		return 0;
 	}
 
-	if (!cb_impl.prompt_user(params.version.c_str())) {
+	if (!cb_impl.prompt_user(params.version.c_str(), params.details.c_str())) {
 		handle_exit();
 		return 1;
 	}
