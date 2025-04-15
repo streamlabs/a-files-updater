@@ -429,7 +429,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 		local_ssl_socket.lowest_layer().connect(*endpoint_iterator++, error);
 	} while (error && endpoint_iterator != tcp::resolver::iterator{});
 
-	if (error.failed()) {
+if (error.failed()) {
 		installer_events->installer_package_failed(packageName, "HTTP(2) " + error.message());
 		return;
 	}
@@ -584,105 +584,108 @@ void update_client::check_resolve_timeout_callback_err(const boost::system::erro
  *#
  *############################################*/
 
-void update_client::checkup_files(struct blockers_map_t &blockers, int from, int to)
-{
-	for (int i = from; i < to; i++) {
-		fs::path entry = local_manifest.at(i).first;
-		fs::path key_path(fs::relative(entry, params->app_dir));
+ void update_client::checkup_files(struct blockers_map_t &blockers, int from, int to)
+ {
+	 for (int i = from; i < to; i++) {
+		 fs::path entry = local_manifest.at(i).first;
+		 fs::path key_path(fs::relative(entry, params->app_dir));
 
-		fs::path cleaned_file_name = key_path.make_preferred();
-		std::string key = cleaned_file_name.u8string();
+		 fs::path cleaned_file_name = key_path.make_preferred();
+		 std::string key = cleaned_file_name.u8string();
 
-		auto manifest_iter = manifest.find(key);
+		 std::string checksum;
+		 bool is_updatable = check_file_updatable(entry, true, blockers);
+		 if (is_updatable) {
+			 checksum = calculate_files_checksum_safe(entry);
+		 }
 
-		if (manifest_iter == manifest.end()) {
-			if (params->enable_removing_old_files) {
-				auto entry_update_info = manifest_entry_t(std::string(""));
-				entry_update_info.compared_to_local = true;
-				entry_update_info.remove_at_update = true;
+		 {
+			 std::lock_guard<std::mutex> lock(manifest_mutex);
+			 auto manifest_iter = manifest.find(key);
 
-				if (key.find("Uninstall") == 0 || key.find("installername") == 0) {
-					entry_update_info.remove_at_update = false;
-					entry_update_info.skip_update = true;
-				}
+			 if (manifest_iter == manifest.end()) {
+				 if (params->enable_removing_old_files) {
+					 auto entry_update_info = manifest_entry_t(std::string(""));
+					 entry_update_info.compared_to_local = true;
+					 entry_update_info.remove_at_update = true;
 
-				manifest.emplace(std::make_pair(key, entry_update_info));
+					 if (key.find("Uninstall") == 0 || key.find("installername") == 0) {
+						 entry_update_info.remove_at_update = false;
+						 entry_update_info.skip_update = true;
+					 }
 
-				local_manifest.at(i).second = calculate_files_checksum_safe(entry);
-			} else {
-				if(local_manifest.at(i).second.empty())
-					local_manifest.at(i).second = calculate_files_checksum_safe(entry);
-			}
-			continue;
-		}
+					 manifest.emplace(std::make_pair(key, entry_update_info));
+				 }
+				 local_manifest.at(i).second = checksum.empty() ? calculate_files_checksum_safe(entry) : checksum;
+				 continue;
+			 }
 
-		if (check_file_updatable(entry, true, blockers)) {
-			if (!manifest_iter->second.compared_to_local) {
-				std::string checksum = calculate_files_checksum_safe(entry);
+			 if (is_updatable && !manifest_iter->second.compared_to_local) {
+				 manifest_iter->second.compared_to_local = true;
+				 local_manifest.at(i).second = checksum;
 
-				manifest_iter->second.compared_to_local = true;
-				local_manifest.at(i).second = checksum;
+				 if (checksum.compare(manifest_iter->second.hash_sum) == 0) {
+					 manifest_iter->second.skip_update = true;
+					 continue;
+				 }
+			 }
+		 }
 
-				if (checksum.compare(manifest_iter->second.hash_sum) == 0) {
-					manifest_iter->second.skip_update = true;
-					continue;
-				}
-			}
+		 if (is_updatable) {
+			 check_file_updatable(entry, false, blockers);
+		 }
+	 }
+ }
 
-			check_file_updatable(entry, false, blockers);
-		}
-	}
-}
+ void update_client::checkup_manifest(blockers_map_t &blockers)
+ {
+	 int max_threads = std::thread::hardware_concurrency();
 
-void update_client::checkup_manifest(blockers_map_t &blockers)
-{
-	int max_threads = std::thread::hardware_concurrency();
+	 /* Generate the manifest for the current application directory */
+	 fs::recursive_directory_iterator app_dir_iter(params->app_dir);
+	 fs::recursive_directory_iterator end_iter{};
 
-	/* Generate the manifest for the current application directory */
-	fs::recursive_directory_iterator app_dir_iter(params->app_dir);
-	fs::recursive_directory_iterator end_iter{};
+	 for (; app_dir_iter != end_iter; ++app_dir_iter) {
+		 fs::path entry = app_dir_iter->path();
+		 std::error_code ec;
 
-	for (; app_dir_iter != end_iter; ++app_dir_iter) {
-		fs::path entry = app_dir_iter->path();
-		std::error_code ec;
+		 auto entry_status = fs::status(entry, ec);
+		 if (ec)
+			 continue;
 
-		auto entry_status = fs::status(entry, ec);
-		if (ec)
-			continue;
+		 if (fs::is_directory(entry_status))
+			 continue;
 
-		if (fs::is_directory(entry_status))
-			continue;
+		 if (std::find_if(local_manifest.begin(), local_manifest.end(),
+				  [&](std::pair<fs::path, std::string> &entry_pair) { return entry_pair.first == entry; }) != local_manifest.end())
+			 continue;
 
-		if (std::find_if(local_manifest.begin(), local_manifest.end(),
-				 [&](std::pair<fs::path, std::string> &entry_pair) { return entry_pair.first == entry; }) != local_manifest.end())
-			continue;
+		 local_manifest.emplace_back(entry, std::string(""));
+	 }
 
-		local_manifest.emplace_back(entry, std::string(""));
-	}
+	 std::vector<std::thread *> workers;
 
-	std::vector<std::thread *> workers;
+	 if (max_threads > local_manifest.size())
+		 max_threads = local_manifest.size();
 
-	if (max_threads > local_manifest.size())
-		max_threads = local_manifest.size();
+	 size_t from = 0;
+	 size_t to = 0;
+	 for (int i = 0; i < max_threads; i++) {
+		 if (i + 1 != max_threads)
+			 to = local_manifest.size() * (i + 1) / max_threads;
+		 else
+			 to = local_manifest.size();
+		 workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), from, to));
+		 from = to;
+	 }
 
-	size_t from = 0;
-	size_t to = 0;
-	for (int i = 0; i < max_threads; i++) {
-		if (i + 1 != max_threads)
-			to = local_manifest.size() * (i + 1) / max_threads;
-		else
-			to = local_manifest.size();
-		workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), from, to));
-		from = to;
-	}
+	 for (auto worker : workers) {
+		 if (worker->joinable())
+			 worker->join();
+	 }
 
-	for (auto worker : workers) {
-		if (worker->joinable())
-			worker->join();
-	}
-
-	return;
-}
+	 return;
+ }
 
 std::mutex manifest_result_mutex;
 
