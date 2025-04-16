@@ -1090,38 +1090,38 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	}
 
 	if (!cb_impl.prompt_user(params.version.c_str(), params.details.c_str())) {
-		handle_exit();
-		return 1;
+		//act as if we updated so app will be launched
+		cb_impl.success();
+	} else {
+		auto client_deleter = [](struct update_client *client) { destroy_update_client(client); };
+
+		std::unique_ptr<struct update_client, decltype(client_deleter)> client(create_update_client(&params), client_deleter);
+
+		update_client_set_client_events(client.get(), &cb_impl);
+		update_client_set_downloader_events(client.get(), &cb_impl);
+		update_client_set_updater_events(client.get(), &cb_impl);
+		update_client_set_pid_events(client.get(), &cb_impl);
+		update_client_set_blocker_events(client.get(), &cb_impl);
+		update_client_set_disk_space_events(client.get(), &cb_impl);
+		update_client_set_installer_events(client.get(), &cb_impl);
+
+		cb_impl.initialize(client.get());
+
+		std::thread workerThread([&]() {
+			// Threaded because package installations come first which is blocking from the perspective of the file updater
+			update_client_start(client.get());
+		});
+
+		MSG msg;
+
+		while (GetMessage(&msg, NULL, 0, 0) > 0) {
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+
+		workerThread.join();
+		update_client_flush(client.get());
 	}
-
-	auto client_deleter = [](struct update_client *client) { destroy_update_client(client); };
-
-	std::unique_ptr<struct update_client, decltype(client_deleter)> client(create_update_client(&params), client_deleter);
-
-	update_client_set_client_events(client.get(), &cb_impl);
-	update_client_set_downloader_events(client.get(), &cb_impl);
-	update_client_set_updater_events(client.get(), &cb_impl);
-	update_client_set_pid_events(client.get(), &cb_impl);
-	update_client_set_blocker_events(client.get(), &cb_impl);
-	update_client_set_disk_space_events(client.get(), &cb_impl);
-	update_client_set_installer_events(client.get(), &cb_impl);
-
-	cb_impl.initialize(client.get());
-
-	std::thread workerThread([&]() {
-		// Threaded because package installations come first which is blocking from the perspective of the file updater
-		update_client_start(client.get());
-	});
-
-	MSG msg;
-
-	while (GetMessage(&msg, NULL, 0, 0) > 0) {
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
-	}
-
-	workerThread.join();
-	update_client_flush(client.get());
 
 	/* Don't attempt start if application failed to update */
 	if (cb_impl.should_start || params.restart_on_fail || !cb_impl.finished_downloading) {
