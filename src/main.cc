@@ -39,7 +39,7 @@ const COLORREF dlg_bg_color = RGB(23, 36, 45);
 const COLORREF edit_bg_color = RGB(12, 17, 22);
 const COLORREF gray_btn_color = RGB(100, 100, 110);
 const COLORREF kev_btn_color = RGB(128, 245, 210);
-const COLORREF disabled_gray_color = RGB(150, 150, 150);
+const COLORREF disabled_gray_color = RGB(175, 175, 190);
 const COLORREF white_color = RGB(255, 255, 255);
 const COLORREF black_color = RGB(0, 0, 0);
 
@@ -106,6 +106,7 @@ struct callbacks_impl : public install_callbacks,
 	std::wstring remind_btn_label;
 	std::wstring continue_label;
 	std::wstring cancel_label;
+	std::wstring stop_all_label;
 
 	HBRUSH edit_bg_brush;
 	HBRUSH dlg_bg_brush;
@@ -258,7 +259,7 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 
 	std::wstring checking_packages_label = ConvertToUtf16WS(boost::locale::translate("Checking packages..."));
 	std::wstring blockers_list_label = ConvertToUtf16WS(boost::locale::translate("Blockers list"));
-	std::wstring stop_all_label = ConvertToUtf16WS(boost::locale::translate("Stop all"));
+	stop_all_label = ConvertToUtf16WS(boost::locale::translate("Stop all"));
 	continue_label = ConvertToUtf16WS(boost::locale::translate("Continue"));
 	cancel_label = ConvertToUtf16WS(boost::locale::translate("Cancel"));
 	update_btn_label = ConvertToUtf16WS(boost::locale::translate("Upgrade"));
@@ -319,7 +320,7 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 void callbacks_impl::setupFont()
 {
 	LOGFONT lf = {0};
-	lf.lfHeight = 22;
+	lf.lfHeight = 20;
 	lf.lfWidth = 0;
 	lf.lfEscapement = 0;
 	lf.lfOrientation = 0;
@@ -330,10 +331,10 @@ void callbacks_impl::setupFont()
 	lf.lfCharSet = DEFAULT_CHARSET;
 	lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
 	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
-	lf.lfQuality = CLEARTYPE_QUALITY;
+	lf.lfQuality = ANTIALIASED_QUALITY;
 	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
-	lstrcpy(lf.lfFaceName, L"Segoe UI");
-
+	lstrcpy(lf.lfFaceName, L"Sans Serif");
+	
 	main_font = CreateFontIndirect(&lf);
 
 	SendMessage(frame, WM_SETFONT, WPARAM(main_font), TRUE);
@@ -1000,21 +1001,18 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 		if ((HWND)lParam == ctx->kill_button) {
 			EnableWindow(ctx->kill_button, false);
-			Sleep(1000);
 			ctx->should_kill_blockers = true;
 			break;
 		}
 		if ((HWND)lParam == ctx->continue_button) {
 			EnableWindow(ctx->continue_button, false);
 			ctx->should_continue = true;
-			Sleep(1000);
 			break;
 		}
 		if ((HWND)lParam == ctx->cancel_button) {
 			EnableWindow(ctx->kill_button, false);
 			EnableWindow(ctx->continue_button, false);
 			EnableWindow(ctx->cancel_button, false);
-			Sleep(1000);
 			ctx->should_kill_blockers = false;
 			ctx->should_continue = false;
 			ctx->should_cancel = true;
@@ -1050,7 +1048,7 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			SetBkColor((HDC)wParam, kev_btn_color);
 			return (LRESULT)ctx->kev_btn_brush;
 		} else {
-			if ((!IsWindowEnabled((HWND)lParam) && ((HWND)lParam == ctx->continue_button))) {
+			if (!IsWindowEnabled((HWND)lParam)) {
 				SetTextColor((HDC)wParam, disabled_gray_color);
 			} else {
 				SetTextColor((HDC)wParam, white_color);
@@ -1078,6 +1076,9 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			} else {
 				DrawText(dis->hDC, ctx->cancel_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			}
+		}
+		if (dis->hwndItem == ctx->kill_button) {
+			DrawText(dis->hDC, ctx->stop_all_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		}
 	} break;
 	}
