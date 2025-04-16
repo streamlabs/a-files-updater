@@ -429,7 +429,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 		local_ssl_socket.lowest_layer().connect(*endpoint_iterator++, error);
 	} while (error && endpoint_iterator != tcp::resolver::iterator{});
 
-	if (error.failed()) {
+if (error.failed()) {
 		installer_events->installer_package_failed(packageName, "HTTP(2) " + error.message());
 		return;
 	}
@@ -593,33 +593,34 @@ void update_client::checkup_files(struct blockers_map_t &blockers, int from, int
 		fs::path cleaned_file_name = key_path.make_preferred();
 		std::string key = cleaned_file_name.u8string();
 
-		auto manifest_iter = manifest.find(key);
-
-		if (manifest_iter == manifest.end()) {
-			if (params->enable_removing_old_files) {
-				auto entry_update_info = manifest_entry_t(std::string(""));
-				entry_update_info.compared_to_local = true;
-				entry_update_info.remove_at_update = true;
-
-				if (key.find("Uninstall") == 0 || key.find("installername") == 0) {
-					entry_update_info.remove_at_update = false;
-					entry_update_info.skip_update = true;
-				}
-
-				manifest.emplace(std::make_pair(key, entry_update_info));
-
-				local_manifest.at(i).second = calculate_files_checksum_safe(entry);
-			} else {
-				if(local_manifest.at(i).second.empty())
-					local_manifest.at(i).second = calculate_files_checksum_safe(entry);
-			}
-			continue;
+		std::string checksum;
+		bool is_updatable = check_file_updatable(entry, true, blockers);
+		if (is_updatable) {
+			checksum = calculate_files_checksum_safe(entry);
 		}
 
-		if (check_file_updatable(entry, true, blockers)) {
-			if (!manifest_iter->second.compared_to_local) {
-				std::string checksum = calculate_files_checksum_safe(entry);
+		{
+			std::lock_guard<std::mutex> lock(manifest_mutex);
+			auto manifest_iter = manifest.find(key);
 
+			if (manifest_iter == manifest.end()) {
+				if (params->enable_removing_old_files) {
+					auto entry_update_info = manifest_entry_t(std::string(""));
+					entry_update_info.compared_to_local = true;
+					entry_update_info.remove_at_update = true;
+
+					if (key.find("Uninstall") == 0 || key.find("installername") == 0) {
+						entry_update_info.remove_at_update = false;
+						entry_update_info.skip_update = true;
+					}
+
+					manifest.emplace(std::make_pair(key, entry_update_info));
+				}
+				local_manifest.at(i).second = checksum.empty() ? calculate_files_checksum_safe(entry) : checksum;
+				continue;
+			}
+
+			if (is_updatable && !manifest_iter->second.compared_to_local) {
 				manifest_iter->second.compared_to_local = true;
 				local_manifest.at(i).second = checksum;
 
@@ -628,7 +629,9 @@ void update_client::checkup_files(struct blockers_map_t &blockers, int from, int
 					continue;
 				}
 			}
+		}
 
+		if (is_updatable) {
 			check_file_updatable(entry, false, blockers);
 		}
 	}
