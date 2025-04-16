@@ -38,7 +38,7 @@ const int ui_min_width = 400;
 const COLORREF dlg_bg_color = RGB(23, 36, 45);
 const COLORREF edit_bg_color = RGB(12, 17, 22);
 const COLORREF gray_btn_color = RGB(100, 100, 110);
-const COLORREF kev_btn_color = RGB(128, 245, 210);
+const COLORREF kev_color = RGB(128, 245, 210);
 const COLORREF disabled_gray_color = RGB(175, 175, 190);
 const COLORREF white_color = RGB(255, 255, 255);
 const COLORREF black_color = RGB(0, 0, 0);
@@ -215,7 +215,7 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		throw std::runtime_error("window registration failed");
 	}
 
-	kev_btn_brush = CreateSolidBrush(kev_btn_color);
+	kev_btn_brush = CreateSolidBrush(kev_color);
 	gray_btn_brush = CreateSolidBrush(gray_btn_color);
 	dlg_bg_brush = CreateSolidBrush(dlg_bg_color);
 	edit_bg_brush = CreateSolidBrush(edit_bg_color);
@@ -311,7 +311,7 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 	rgn = CreateRoundRectRgn(0, 0, btnRect.right, btnRect.bottom, cRounding, cRounding);
 	SetWindowRgn(cancel_button, rgn, true);
 
-	SendMessage(progress_worker, PBM_SETBARCOLOR, 0, RGB(49, 195, 162));
+	SendMessage(progress_worker, PBM_SETBARCOLOR, 0, kev_color);
 	SendMessage(progress_worker, PBM_SETRANGE32, 0, INT_MAX);
 
 	setupFont();
@@ -1038,7 +1038,7 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 		SetBkMode((HDC)wParam, TRANSPARENT);
 		if (((HWND)lParam == ctx->progress_label) && ctx->prompting) {
-			SetTextColor((HDC)wParam, kev_btn_color);
+			SetTextColor((HDC)wParam, kev_color);
 			SetBkColor((HDC)wParam, dlg_bg_color);
 			return (LRESULT)ctx->dlg_bg_brush;
 		} else if ((HWND)lParam == ctx->blockers_list) {
@@ -1062,7 +1062,7 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			} else {
 				SetTextColor((HDC)wParam, black_color);
 			}
-			SetBkColor((HDC)wParam, kev_btn_color);
+			SetBkColor((HDC)wParam, kev_color);
 			return (LRESULT)ctx->kev_btn_brush;
 		} else {
 			if (!IsWindowEnabled((HWND)lParam)) {
