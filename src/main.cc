@@ -108,10 +108,10 @@ struct callbacks_impl : public install_callbacks,
 	std::wstring cancel_label;
 	std::wstring stop_all_label;
 
-	HBRUSH edit_bg_brush;
-	HBRUSH dlg_bg_brush;
-	HBRUSH gray_btn_brush;
-	HBRUSH kev_btn_brush;
+	HBRUSH edit_bg_brush{NULL};
+	HBRUSH dlg_bg_brush{NULL};
+	HBRUSH gray_btn_brush{NULL};
+	HBRUSH kev_btn_brush{NULL};
 
 	HFONT main_font{NULL};
 	RECT progress_label_rect{0};
@@ -393,7 +393,20 @@ void callbacks_impl::repostionUI()
 	SetWindowPos(frame, 0, (screen_width - frame_w) / 2, (screen_height - frame_h) / 2, frame_w, frame_h, SWP_NOREPOSITION | SWP_ASYNCWINDOWPOS);
 }
 
-callbacks_impl::~callbacks_impl() {}
+callbacks_impl::~callbacks_impl() {
+	if (edit_bg_brush != NULL) {
+		DeleteObject(edit_bg_brush);	
+	}
+	if (dlg_bg_brush != NULL) {
+		DeleteObject(dlg_bg_brush);
+	}
+	if (gray_btn_brush != NULL) {
+		DeleteObject(gray_btn_brush);
+	}
+	if (kev_btn_brush != NULL) {
+		DeleteObject(kev_btn_brush);
+	}
+}
 
 void callbacks_impl::initialize(struct update_client *client)
 {
@@ -1044,7 +1057,11 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 		SetBkMode((HDC)wParam, TRANSPARENT);
 		if (((HWND)lParam == ctx->continue_button) && ctx->prompting) {
-			SetTextColor((HDC)wParam, black_color);
+			if (!IsWindowEnabled((HWND)lParam)) {
+				SetTextColor((HDC)wParam, disabled_gray_color);
+			} else {
+				SetTextColor((HDC)wParam, black_color);
+			}
 			SetBkColor((HDC)wParam, kev_btn_color);
 			return (LRESULT)ctx->kev_btn_brush;
 		} else {
