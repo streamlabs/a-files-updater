@@ -35,6 +35,14 @@ const int ui_padding = 10;
 const int ui_basic_height = 40;
 const int ui_min_width = 400;
 
+const COLORREF dlg_bg_color = RGB(23, 36, 45);
+const COLORREF edit_bg_color = RGB(12, 17, 22);
+const COLORREF gray_btn_color = RGB(100, 100, 110);
+const COLORREF kev_color = RGB(128, 245, 210);
+const COLORREF disabled_gray_color = RGB(175, 175, 190);
+const COLORREF white_color = RGB(255, 255, 255);
+const COLORREF black_color = RGB(0, 0, 0);
+
 bool update_completed = false;
 
 std::string getDefaultErrorMessage()
@@ -98,6 +106,12 @@ struct callbacks_impl : public install_callbacks,
 	std::wstring remind_btn_label;
 	std::wstring continue_label;
 	std::wstring cancel_label;
+	std::wstring stop_all_label;
+
+	HBRUSH edit_bg_brush{NULL};
+	HBRUSH dlg_bg_brush{NULL};
+	HBRUSH gray_btn_brush{NULL};
+	HBRUSH kev_btn_brush{NULL};
 
 	HFONT main_font{NULL};
 	RECT progress_label_rect{0};
@@ -189,7 +203,7 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 	wc.hInstance = hInstance;
 	wc.hIcon = app_icon;
 	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-	wc.hbrBackground = CreateSolidBrush(RGB(23, 36, 45));
+	wc.hbrBackground = CreateSolidBrush(dlg_bg_color);
 	wc.lpszMenuName = NULL;
 	wc.lpszClassName = TEXT("UpdaterFrame");
 	wc.hIconSm = app_icon;
@@ -200,6 +214,11 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 
 		throw std::runtime_error("window registration failed");
 	}
+
+	kev_btn_brush = CreateSolidBrush(kev_color);
+	gray_btn_brush = CreateSolidBrush(gray_btn_color);
+	dlg_bg_brush = CreateSolidBrush(dlg_bg_color);
+	edit_bg_brush = CreateSolidBrush(edit_bg_color);
 
 	/* We only care about the main display */
 	screen_width = GetSystemMetrics(SM_CXSCREEN);
@@ -214,8 +233,9 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		throw std::runtime_error("");
 	};
 
-	frame = CreateWindowEx(WS_EX_CLIENTEDGE, TEXT("UpdaterFrame"), TEXT("Streamlabs Desktop Updater"), WS_OVERLAPPED | WS_MINIMIZEBOX | WS_SYSMENU,
-			       (screen_width - width) / 2, (screen_height - height) / 2, width, height, NULL, NULL, hInstance, NULL);
+	frame = CreateWindowEx(WS_EX_CLIENTEDGE, TEXT("UpdaterFrame"), TEXT("Streamlabs Desktop Updater"),
+			       WS_OVERLAPPED | WS_MINIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, (screen_width - width) / 2, (screen_height - height) / 2, width,
+			       height, NULL, NULL, hInstance, NULL);
 
 	SetWindowLongPtr(frame, GWLP_USERDATA, (LONG_PTR)this);
 
@@ -239,7 +259,7 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 
 	std::wstring checking_packages_label = ConvertToUtf16WS(boost::locale::translate("Checking packages..."));
 	std::wstring blockers_list_label = ConvertToUtf16WS(boost::locale::translate("Blockers list"));
-	std::wstring stop_all_label = ConvertToUtf16WS(boost::locale::translate("Stop all"));
+	stop_all_label = ConvertToUtf16WS(boost::locale::translate("Stop all"));
 	continue_label = ConvertToUtf16WS(boost::locale::translate("Continue"));
 	cancel_label = ConvertToUtf16WS(boost::locale::translate("Cancel"));
 	update_btn_label = ConvertToUtf16WS(boost::locale::translate("Upgrade"));
@@ -268,16 +288,30 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		do_fail(getDefaultErrorMessage(), L"SetWindowSubclass");
 	}
 
-	kill_button = CreateWindow(WC_BUTTON, stop_all_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON, x_size + ui_padding - 100,
+	kill_button = CreateWindow(WC_BUTTON, stop_all_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW, x_size + ui_padding - 100,
 				   rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL, NULL);
 
-	continue_button = CreateWindow(WC_BUTTON, continue_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON, x_size + ui_padding - 100,
+	continue_button = CreateWindow(WC_BUTTON, continue_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW, x_size + ui_padding - 100,
 				       rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL, NULL);
 
-	cancel_button = CreateWindow(WC_BUTTON, cancel_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON, x_size + ui_padding - 100 - ui_padding - 100,
-				     rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL, NULL);
+	cancel_button = CreateWindow(WC_BUTTON, cancel_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW,
+				     x_size + ui_padding - 100 - ui_padding - 100, rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL,
+				     NULL);
 
-	SendMessage(progress_worker, PBM_SETBARCOLOR, 0, RGB(49, 195, 162));
+	//make the buttons rounded - after SetWindowRgn, window owns HRGNs and will destroy them
+	RECT btnRect = {0};
+	int cRounding = 4;
+	GetClientRect(kill_button, &btnRect);
+	HRGN rgn = CreateRoundRectRgn(0, 0, btnRect.right, btnRect.bottom, cRounding, cRounding);
+	SetWindowRgn(kill_button, rgn, true);
+	GetClientRect(continue_button, &btnRect);
+	rgn = CreateRoundRectRgn(0, 0, btnRect.right, btnRect.bottom, cRounding, cRounding);
+	SetWindowRgn(continue_button, rgn, true);
+	GetClientRect(cancel_button, &btnRect);
+	rgn = CreateRoundRectRgn(0, 0, btnRect.right, btnRect.bottom, cRounding, cRounding);
+	SetWindowRgn(cancel_button, rgn, true);
+
+	SendMessage(progress_worker, PBM_SETBARCOLOR, 0, kev_color);
 	SendMessage(progress_worker, PBM_SETRANGE32, 0, INT_MAX);
 
 	setupFont();
@@ -290,7 +324,7 @@ void callbacks_impl::setupFont()
 	lf.lfWidth = 0;
 	lf.lfEscapement = 0;
 	lf.lfOrientation = 0;
-	lf.lfWeight = FW_NORMAL;
+	lf.lfWeight = FW_DONTCARE;
 	lf.lfItalic = FALSE;
 	lf.lfUnderline = FALSE;
 	lf.lfStrikeOut = FALSE;
@@ -298,9 +332,9 @@ void callbacks_impl::setupFont()
 	lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
 	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
 	lf.lfQuality = CLEARTYPE_QUALITY;
-	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
-	lstrcpy(lf.lfFaceName, L"Segoe UI");
-
+	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
+	lstrcpy(lf.lfFaceName, L"SEGOE UI");
+	
 	main_font = CreateFontIndirect(&lf);
 
 	SendMessage(frame, WM_SETFONT, WPARAM(main_font), TRUE);
@@ -359,7 +393,20 @@ void callbacks_impl::repostionUI()
 	SetWindowPos(frame, 0, (screen_width - frame_w) / 2, (screen_height - frame_h) / 2, frame_w, frame_h, SWP_NOREPOSITION | SWP_ASYNCWINDOWPOS);
 }
 
-callbacks_impl::~callbacks_impl() {}
+callbacks_impl::~callbacks_impl() {
+	if (edit_bg_brush != NULL) {
+		DeleteObject(edit_bg_brush);	
+	}
+	if (dlg_bg_brush != NULL) {
+		DeleteObject(dlg_bg_brush);
+	}
+	if (gray_btn_brush != NULL) {
+		DeleteObject(gray_btn_brush);
+	}
+	if (kev_btn_brush != NULL) {
+		DeleteObject(kev_btn_brush);
+	}
+}
 
 void callbacks_impl::initialize(struct update_client *client)
 {
@@ -410,7 +457,7 @@ void callbacks_impl::downloader_preparing(bool connected)
 	if (connected) {
 		checking_label = ConvertToUtf16WS(boost::locale::translate("Checking local files..."));
 	} else {
-		checking_label = ConvertToUtf16WS(boost::locale::translate("Connecting to server..."));	
+		checking_label = ConvertToUtf16WS(boost::locale::translate("Connecting to server..."));
 	}
 
 	HDC hdc = GetDC(frame);
@@ -898,7 +945,6 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	return shouldUpdate;
 }
 
-
 LRESULT CALLBACK ProgressLabelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	switch (msg) {
@@ -919,6 +965,10 @@ LRESULT CALLBACK ProgressLabelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 LRESULT CALLBACK BlockersListWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	switch (msg) {
+	case WM_PAINT: {
+		//redraw on scroll so text doesn't overwrite itself - parent is now WS_CLIPCHILDREN so have to manually invalidate
+		InvalidateRect(hwnd, NULL, true);
+	} break;
 	case WM_HSCROLL:
 	case WM_VSCROLL:
 	case WM_SETTEXT: {
@@ -986,10 +1036,66 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
 		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
 
-		if ((HWND)lParam != ctx->blockers_list) {
-			SetTextColor((HDC)wParam, RGB(255, 255, 255));
-			SetBkMode((HDC)wParam, TRANSPARENT);
-			return (LRESULT)GetStockObject(HOLLOW_BRUSH);
+		SetBkMode((HDC)wParam, TRANSPARENT);
+		if (((HWND)lParam == ctx->progress_label) && ctx->prompting) {
+			SetTextColor((HDC)wParam, kev_color);
+			SetBkColor((HDC)wParam, dlg_bg_color);
+			return (LRESULT)ctx->dlg_bg_brush;
+		} else if ((HWND)lParam == ctx->blockers_list) {
+			SetBkColor((HDC)wParam, edit_bg_color);
+			SetTextColor((HDC)wParam, white_color);
+			return (LRESULT)ctx->edit_bg_brush;
+		} else {
+			SetTextColor((HDC)wParam, white_color);
+			SetBkColor((HDC)wParam, dlg_bg_color);
+			return (LRESULT)ctx->dlg_bg_brush;
+		}
+	} break;
+	case WM_CTLCOLORBTN: {
+		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
+
+		SetBkMode((HDC)wParam, OPAQUE);
+		if (((HWND)lParam == ctx->continue_button) && ctx->prompting) {
+			if (!IsWindowEnabled((HWND)lParam)) {
+				SetTextColor((HDC)wParam, disabled_gray_color);
+			} else {
+				SetTextColor((HDC)wParam, black_color);
+			}
+			SetBkColor((HDC)wParam, kev_color);
+			return (LRESULT)ctx->kev_btn_brush;
+		} else {
+			if (!IsWindowEnabled((HWND)lParam)) {
+				SetTextColor((HDC)wParam, disabled_gray_color);
+			} else {
+				SetTextColor((HDC)wParam, white_color);
+			}
+			SetBkColor((HDC)wParam, gray_btn_color);
+			return (LRESULT)ctx->gray_btn_brush;
+		}
+	} break;
+	case WM_DRAWITEM: {
+		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+		LPDRAWITEMSTRUCT dis = (LPDRAWITEMSTRUCT)lParam;
+		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
+
+		if (dis->hwndItem == ctx->continue_button) {
+			if (ctx->prompting) {
+				DrawText(dis->hDC, ctx->update_btn_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			} else {
+				DrawText(dis->hDC, ctx->continue_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			}
+		}
+		if (dis->hwndItem == ctx->cancel_button) {
+			if (ctx->prompting) {
+				DrawText(dis->hDC, ctx->remind_btn_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+			} else {
+				DrawText(dis->hDC, ctx->cancel_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			}
+		}
+		if (dis->hwndItem == ctx->kill_button) {
+			DrawText(dis->hDC, ctx->stop_all_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		}
 	} break;
 	}
