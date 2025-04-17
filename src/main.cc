@@ -320,20 +320,20 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 void callbacks_impl::setupFont()
 {
 	LOGFONT lf = {0};
-	lf.lfHeight = 20;
+	lf.lfHeight = 22;
 	lf.lfWidth = 0;
 	lf.lfEscapement = 0;
 	lf.lfOrientation = 0;
-	lf.lfWeight = FW_NORMAL;
+	lf.lfWeight = FW_DONTCARE;
 	lf.lfItalic = FALSE;
 	lf.lfUnderline = FALSE;
 	lf.lfStrikeOut = FALSE;
 	lf.lfCharSet = DEFAULT_CHARSET;
 	lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
 	lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
-	lf.lfQuality = ANTIALIASED_QUALITY;
-	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
-	lstrcpy(lf.lfFaceName, L"Sans Serif");
+	lf.lfQuality = CLEARTYPE_QUALITY;
+	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
+	lstrcpy(lf.lfFaceName, L"SEGOE UI");
 	
 	main_font = CreateFontIndirect(&lf);
 
@@ -1055,7 +1055,7 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
 		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
 
-		SetBkMode((HDC)wParam, TRANSPARENT);
+		SetBkMode((HDC)wParam, OPAQUE);
 		if (((HWND)lParam == ctx->continue_button) && ctx->prompting) {
 			if (!IsWindowEnabled((HWND)lParam)) {
 				SetTextColor((HDC)wParam, disabled_gray_color);
