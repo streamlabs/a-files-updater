@@ -35,6 +35,15 @@ set(OPENSSL_LIBRARIES ${OPENSSL_ROOT_DIR}/lib/libssl.lib ${OPENSSL_ROOT_DIR}/lib
 
 option(USE_STREAMLABS_RESOURCE "Embed and use the streamlabs resource file in the resulting executable" ON)
 
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp
+    DOWNLOAD_NO_EXTRACT TRUE
+    DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/_deps/nlohmann_json
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 find_package(ZLIB REQUIRED)
 
 set(Boost_USE_STATIC_LIBS ON)
@@ -87,9 +96,7 @@ set_property(TARGET slobs-updater PROPERTY CXX_STANDARD_REQUIRED ON)
 target_include_directories(slobs-updater
 	PRIVATE src/argtable
 	PRIVATE src/fmt
-)
-
-target_include_directories(slobs-updater
+	PRIVATE ${CMAKE_BINARY_DIR}/_deps/nlohmann_json
 	SYSTEM PUBLIC ${OPENSSL_ROOT_DIR}/include
 )
 

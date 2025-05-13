@@ -15,4 +15,4 @@ curl -kLO "%DEPS_DIST_URI%/%BOOST_DIST_NAME%.7z" -f --retry 5
 7z x "%OPENSSL_DIST_NAME%.7z" -oopenssl -y
 7z x "%BOOST_DIST_NAME%.7z" -oboost -y
 
-cd %CD%
+cd %WORK_DIR%
