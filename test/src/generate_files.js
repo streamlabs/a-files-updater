@@ -258,18 +258,18 @@ async function generate_server_dir(testinfo) {
   }
   
   if( testinfo.version_details == "good") {
-  const jsonfile = path.join(testinfo.serverDir, "update.json");
-  fse.outputFileSync(jsonfile, "");
-  const jsoncontent = {
-    version: testinfo.versionName,
-    seed: "1111111121111111",
-    rollout: { default: 100 },
-    restricted: false,
-    fallbackVersion: testinfo.fallbackVersion,
-    details:
-      "Release Notes:\n- Preview build for early testing.\n- Introduces experimental feature flags.\n- Improves core‑engine performance under load.\n- Fixes assorted stability and memory‑leak issues found in 1.18.x.\n- Updates documentation and localization assets.\nBuild date: 2025‑05‑13.",
-  };
-  fse.writeJsonSync(jsonfile, jsoncontent, { spaces: 2 });
+    const jsonfile = path.join(testinfo.serverDir, "update.json");
+    fse.outputFileSync(jsonfile, "");
+    const jsoncontent = {
+      version: testinfo.versionName,
+      seed: "1111111121111111",
+      rollout: { default: 100 },
+      restricted: false,
+      fallbackVersion: testinfo.fallbackVersion,
+      details:
+        "Release Notes:\n- Preview build for early testing.\n- Introduces experimental feature flags.\n- Improves core‑engine performance under load.\n- Fixes assorted stability and memory‑leak issues found in 1.18.x.\n- Updates documentation and localization assets.\nBuild date: 2025‑05‑13.",
+    };
+    fse.writeJsonSync(jsonfile, jsoncontent, { spaces: 2 });
   } else if (testinfo.version_details == "empty") {
     const jsonfile = path.join(testinfo.serverDir, "update.json");
     fse.outputFileSync(jsonfile, "");
