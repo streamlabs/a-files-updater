@@ -14,6 +14,7 @@ exports.start_updater = async function (testinfo) {
     updateDirE = testinfo.initialDir.replace(/\\/g, '\\\\'); 
   }
 
+  updateJsonFile = path.join(testinfo.serverDir, "update.json"); 
   const updaterArgs = [
     '--base-url', `"${testinfo.serverUrl}"`,
     '--version', `"${testinfo.versionName}"`,
@@ -21,7 +22,8 @@ exports.start_updater = async function (testinfo) {
     '--cwd', `"${updateDirE}"`,
     '--interactive', `"${testinfo.runAsInteractive}"`,
     '--app-dir', `"${updateDirE}"`,
-    '--force-temp'
+    '--force-temp',
+    '--details', `"${updateJsonFile}"`
   ];
 
   if (testinfo.pidWaiting) {

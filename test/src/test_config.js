@@ -47,7 +47,7 @@ exports.gettestinfo = function (testname) {
     wrong_arguments: false,
     systemFolder: false,
     corruptBackuped: false,
-
+    version_details: "good", // empty, nofile
     //sentry emulator
     reporterHost: "localhost",
     reporterPort: 80,

@@ -221,6 +221,20 @@ async function run_tests() {
             failed_test_names.push(testinfo.testName);
         }
 
+        testinfo = test_config.gettestinfo(" //empty details file");
+        test_result = await run_test.test_update(testinfo);
+        testinfo.version_details = "empty";
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
+        testinfo = test_config.gettestinfo(" //no details file");
+        test_result = await run_test.test_update(testinfo);
+        testinfo.version_details = "nofile";
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
     }
 
     if (failed_test_names.length == 0) {
