@@ -176,7 +176,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	struct arg_lit *restart_arg = arg_lit0(NULL, "restart-after-fail", "Start Streamlabs Desktop after update fail with option to skip update");
 
-	struct arg_str *details_arg = arg_str1("d", "details", "<details>", "The details of the update");
+	struct arg_str *details_arg = arg_str1("d", "details", "<file>", "Path to the file containing details of the update");
 
 	struct arg_end *end_arg = arg_end(255);
 

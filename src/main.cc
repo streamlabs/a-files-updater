@@ -19,6 +19,8 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/locale.hpp>
 
+#include <json.hpp>
+
 namespace fs = std::filesystem;
 namespace chrono = std::chrono;
 
@@ -835,16 +837,31 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	const wchar_t *wc_break = L"\r\n  ";
 	std::wstring wc_version = ConvertToUtf16WS(boost::locale::translate(pVersion));
 
+	std::string detailsStr;
+	if (pDetails && *pDetails) {
+		try {
+			std::ifstream jfile{pDetails, std::ios::in};
+			if (jfile) {
+				nlohmann::json j;
+				jfile >> j;
+				if (j.contains("details") && j["details"].is_string())
+					detailsStr = j["details"].get<std::string>();
+			}
+		} catch (...) {
+			log_error("Failed to read details file: %s", pDetails);
+		}
+	}
+
 	//handle missing details
 	std::wstring wc_label = L"";
 	std::wstring wc_details = L"New version: "; 
-	if (strlen(pDetails) == 0) {
+	if (detailsStr.empty()) {
 		wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available. Would you like to install?"));
 		wc_details.append(wc_version.c_str());
 	} else {
 		wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available to install: "));
 		wc_label.insert(wc_label.size() - 1, wc_version); //account for null terminator
-		wc_details = ConvertToUtf16WS(boost::locale::translate(pDetails));
+		wc_details = ConvertToUtf16WS(boost::locale::translate(detailsStr.c_str()));
 
 		//tag to heading conversion
 		std::list<std::pair<std::wstring, std::wstring>> tagsToHeadings;
