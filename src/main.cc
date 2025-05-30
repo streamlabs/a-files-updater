@@ -336,7 +336,7 @@ void callbacks_impl::setupFont()
 	lf.lfQuality = CLEARTYPE_QUALITY;
 	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
 	lstrcpy(lf.lfFaceName, L"SEGOE UI");
-	
+
 	main_font = CreateFontIndirect(&lf);
 
 	SendMessage(frame, WM_SETFONT, WPARAM(main_font), TRUE);
@@ -364,6 +364,10 @@ void callbacks_impl::repostionUI()
 		//if blockers_list has so much text that it exceeds screen height, readjust so it's not more than 75% of screen height
 		if ((frame_h + blockers_list_rect.bottom) > screen_height) {
 			blockers_list_rect.bottom -= ((frame_h + blockers_list_rect.bottom) - static_cast<int>(ceil(screen_height * 0.75)));
+		}
+		//if right is larger than 75% width (75% to make it look better than using full size), add some height so aren't scrolling 1 line at a time
+		if (blockers_list_rect.right > (main_w * .75)) {
+			blockers_list_rect.bottom += ui_padding * 5;
 		}
 		SetWindowPos(blockers_list, 0, ui_padding, frame_h, main_w, blockers_list_rect.bottom, SWP_ASYNCWINDOWPOS);
 		frame_h += blockers_list_rect.bottom + ui_padding;
@@ -395,9 +399,10 @@ void callbacks_impl::repostionUI()
 	SetWindowPos(frame, 0, (screen_width - frame_w) / 2, (screen_height - frame_h) / 2, frame_w, frame_h, SWP_NOREPOSITION | SWP_ASYNCWINDOWPOS);
 }
 
-callbacks_impl::~callbacks_impl() {
+callbacks_impl::~callbacks_impl()
+{
 	if (edit_bg_brush != NULL) {
-		DeleteObject(edit_bg_brush);	
+		DeleteObject(edit_bg_brush);
 	}
 	if (dlg_bg_brush != NULL) {
 		DeleteObject(dlg_bg_brush);
@@ -834,7 +839,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	const wchar_t *wc_dash = L"-";
 	const wchar_t *wc_hash = L"#";
 	const wchar_t *wc_bullet = L"\r\n    \u2022 ";
-	const wchar_t *wc_break = L"\r\n  ";
+	const wchar_t *wc_break = L"\r\n";
 	std::wstring wc_version = ConvertToUtf16WS(boost::locale::translate(pVersion));
 
 	std::string detailsStr;
@@ -854,7 +859,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 
 	//handle missing details
 	std::wstring wc_label = L"";
-	std::wstring wc_details = L"New version: "; 
+	std::wstring wc_details = L"New version: ";
 	if (detailsStr.empty()) {
 		wc_label = ConvertToUtf16WS(boost::locale::translate("There's an update available. Would you like to install?"));
 		wc_details.append(wc_version.c_str());
@@ -869,32 +874,35 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 		tagsToHeadings.push_back(std::make_pair(L"#features", L"New Features"));
 		tagsToHeadings.push_back(std::make_pair(L"#generalfixes", L"General Fixes"));
 
-		//format detail string: insert 2 breaks at start -> 1 to have heading on its own line, 1 for spacing, one after heading for spacing
+		//format detail string: insert break at start to have heading on its own line, one after heading for spacing
 		size_t replacePos = 0;
 		for (const auto &tagHeadingPair : tagsToHeadings) {
 			replacePos = wc_details.find(tagHeadingPair.first);
 			if (replacePos != std::wstring::npos) {
 				wc_details.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
 				if (replacePos != 0) {
+					//for all headings except the first, put 2 line breaks so there is separation between sections for easier reading
 					wc_details.insert(replacePos, wc_break);
-					replacePos += +wcslen(wc_break);
+					wc_details.insert(replacePos, wc_break);
+					replacePos += (wcslen(wc_break) * 2);
 				}
-				wc_details.insert(replacePos, wc_break);
-				wc_details.insert(replacePos + wcslen(wc_break) + tagHeadingPair.second.size(), wc_break);
 			}
 		}
 		//if # isn't followed by a known heading, leave as-is to display custom heading
 		int endHeading = 0;
 		replacePos = wc_details.find(wc_hash);
 		while (replacePos != std::wstring::npos) {
-			wc_details.insert(replacePos, wc_break);
-			wc_details.replace(replacePos + wcslen(wc_break), wcslen(wc_hash), wc_break);
-			endHeading = wc_details.find(wc_dash, replacePos);
-			if (endHeading != std::wstring::npos) {
-				wc_details.insert(endHeading, wc_break);
+			if (replacePos != 0) {
+				//for all headings except the first, put 2 line breaks so there is separation between sections for easier reading
+				wc_details.insert(replacePos, wc_break);
+				wc_details.insert(replacePos, wc_break);
+				replacePos += (wcslen(wc_break) * 2);
 			}
-			replacePos = wc_details.find(wc_hash, replacePos + wcslen(wc_break));
+			//simply remove #
+			wc_details.replace(replacePos, 1, L"");
+			replacePos = wc_details.find(wc_hash, replacePos + 1);
 		}
+
 		//replace '-' with end line + spacing + bullet + spacing
 		replacePos = wc_details.find(wc_dash);
 		while (replacePos != std::wstring::npos) {
@@ -902,7 +910,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 			replacePos = wc_details.find(wc_dash, replacePos + wcslen(wc_bullet));
 		}
 		//line break at end to look nicer
-		wc_details.insert(wc_details.length(), wc_break);
+		wc_details.insert(wc_details.length() - 1, wc_break);
 	}
 
 	prompting = true;
