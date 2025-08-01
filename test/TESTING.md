@@ -9,7 +9,7 @@ cmake -G "Visual Studio 15 2017 Win64" ../
 cmake --build . --target ALL_BUILD --config Debug
 cd ..\test
 yarn install 
-node src\run_tests.js
+yarn node src\run_tests.js
 ```
 
 To run just one test. Change `src\run_tests.js` to set `run_one_test` and test paramets like you need. And run it as `node src\run_tests.js`

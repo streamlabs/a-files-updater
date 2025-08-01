@@ -843,6 +843,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	std::wstring wc_version = ConvertToUtf16WS(boost::locale::translate(pVersion));
 
 	std::string detailsStr;
+	bool forceUpdate = false;
 	if (pDetails && *pDetails) {
 		try {
 			std::ifstream jfile{pDetails, std::ios::in};
@@ -851,6 +852,8 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 				jfile >> j;
 				if (j.contains("details") && j["details"].is_string())
 					detailsStr = j["details"].get<std::string>();
+				if (j.contains("forceUpdate") && j["forceUpdate"].is_boolean())
+					forceUpdate = j["forceUpdate"].get<bool>();
 			}
 		} catch (...) {
 			log_error("Failed to read details file: %s", pDetails);
@@ -929,7 +932,9 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 
 	ShowWindow(blockers_list, SW_SHOW);
 	ShowWindow(continue_button, SW_SHOW);
-	ShowWindow(cancel_button, SW_SHOW);
+	if (!forceUpdate) {
+		ShowWindow(cancel_button, SW_SHOW);
+	}
 	repostionUI();
 
 	SetWindowTextW(progress_label, wc_label.c_str());
