@@ -229,6 +229,8 @@ async function generate_server_dir(testinfo) {
       continue;
     } else if(file.testing == "deleted exception") {
       continue;
+    } else if(file.testing == "skip exception") {
+      continue;
     } 
 
     await generate_file(update_subdirpath, file.name, filecontentextended, fileempty, file.hugefile);
@@ -309,7 +311,9 @@ async function generate_initial_dir(testinfo, update_subdirpath = "") {
       fileempty = true;
     } else if(file.testing == "deleted exception") {
 
-    } 
+    } else if(file.testing == "skip exception") {
+
+    }
 
     await generate_file(update_subdirpath, file.name, filecontentextended, fileempty, file.hugefile);
   }
@@ -357,7 +361,9 @@ async function generate_result_dir(testinfo, update_subdirpath) {
       continue;
     } else if(file.testing == "deleted exception") {
 
-    } 
+    } else if(file.testing == "skip exception") {
+      continue;
+    }
 
     await generate_file(update_subdirpath, file.name, filecontentextended, fileempty, file.hugefile);
   }
@@ -433,6 +439,8 @@ exports.generate_test_files = async function (testinfo) {
 exports.check_results = function (testinfo) {
   var dircompare = require('dir-compare');
   var format = require('util').format;
+  const fs = require('fs');
+  const path = require('path');
 
   var options = { compareSize: true, compareContent: true };
   var path1 = testinfo.initialDir;
@@ -441,21 +449,33 @@ exports.check_results = function (testinfo) {
   var states = { 'equal': '==', 'left': '->', 'right': '<-', 'distinct': '<>' };
 
   var res = dircompare.compareSync(path1, path2, options);
-  let ret = res.distinct != 0 && res.left != 0 || res.right != 0 || res.differences != 0
 
   if(testinfo.more_log_output)
     console.log(format('Compare dirs: equal=%s, distinct=%s, left=%s, right=%s, differences=%s, same=%s',
       res.equal, res.distinct, res.left, res.right, res.differences, res.same));
 
-  res.diffSet.forEach(function (entry) {
-    var state = states[entry.state];
-    var name1 = entry.name1 ? entry.name1 : '';
-    var name2 = entry.name2 ? entry.name2 : '';
+  let file_distinct = res.distinct;
+  let file_left = 0;
+  let file_right = 0;
 
-    if (ret) {
-      console.log(format('%s(%s)%s%s(%s)', name1, entry.type1, state, name2, entry.type2));
+  res.diffSet.forEach(function (entry) {
+    if (entry.state === 'left' && entry.type1 === 'file') {
+      file_left++;
+    } else if (entry.state === 'right' && entry.type2 === 'file') {
+      file_right++;
     }
   });
+
+  let ret = file_distinct !== 0 || file_left !== 0 || file_right !== 0;
+
+  if (ret) {
+    res.diffSet.forEach(function (entry) {
+      var state = states[entry.state];
+      var name1 = entry.name1 ? entry.name1 : '';
+      var name2 = entry.name2 ? entry.name2 : '';
+      console.log(format('%s(%s)%s%s(%s)', name1, entry.type1, state, name2, entry.type2));
+    });
+  }
 
   if (ret) {
     const report_path = path.join(testinfo.reporterDir, "crash_report.json")

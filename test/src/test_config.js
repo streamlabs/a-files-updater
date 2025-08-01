@@ -96,6 +96,7 @@ exports.gettestinfo = function (testname) {
     { name: "Uninstall Streamlabs OBS.exe", hugefile: false, testing: "deleted exception" },
     { name: "Uninstall Streamlabs Desktop.exe", hugefile: false, testing: "deleted exception" },
     { name: "installername", hugefile: false, testing: "deleted exception" },
+    { name: "dir/resources/app.asar.unpacked/node_modules/plugin.dll", hugefile: false, testing: "skip exception" },
     { name: "руский файл.jpeg", hugefile: false, testing: "same" },
     { name: "文件名.jpeg", hugefile: false, testing: "same" },
     { name: "рузский файл.jpeg", hugefile: false, testing: "changed content" },

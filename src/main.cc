@@ -747,7 +747,7 @@ void callbacks_impl::disk_space_check_start()
 	ShowWindow(progress_worker, SW_HIDE);
 
 	std::wstring disk_space_label =
-		ConvertToUtf16WS(boost::locale::translate("Streamlabs Desktop requires at least 2Gb of free disk space to update safely,\n"
+		ConvertToUtf16WS(boost::locale::translate("Streamlabs Desktop requires at least 2GB of free disk space to update safely,\n"
 							  "updates may fail without this space. If you want to ensure safe updates,\n"
 							  "please reinstall Streamlabs Desktop to a drive with available space:"));
 	HDC hdc = GetDC(frame);

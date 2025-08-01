@@ -311,7 +311,7 @@ void update_client::flush()
 
 bool update_client::check_disk_space()
 {
-	size_t MIN_FREE_SPACE = 2*10000000000; //1GB
+	size_t MIN_FREE_SPACE = 2*1000000000; //2GB
 	std::error_code ec{};
 	bool notified = false;
 
@@ -612,9 +612,16 @@ void update_client::checkup_files(struct blockers_map_t &blockers, int from, int
 					if (key.find("Uninstall") == 0 || key.find("installername") == 0) {
 						entry_update_info.remove_at_update = false;
 						entry_update_info.skip_update = true;
-					}
+					} 
 
 					manifest.emplace(std::make_pair(key, entry_update_info));
+				} else {
+					if (key.find("resources/app.asar.unpacked/node_modules") == 0) {
+						auto entry_update_info = manifest_entry_t(std::string(""));
+						entry_update_info.compared_to_local = true;
+						entry_update_info.remove_at_update = true;
+						manifest.emplace(std::make_pair(key, entry_update_info));
+					}
 				}
 				local_manifest.at(i).second = checksum.empty() ? calculate_files_checksum_safe(entry) : checksum;
 				continue;
