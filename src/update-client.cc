@@ -673,7 +673,7 @@ void update_client::checkup_manifest(blockers_map_t &blockers)
 	std::vector<std::thread *> workers;
 
 	if (max_threads > local_manifest.size())
-		max_threads = local_manifest.size();
+		max_threads = static_cast<int>(local_manifest.size());
 
 	size_t from = 0;
 	size_t to = 0;
