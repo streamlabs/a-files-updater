@@ -19,7 +19,8 @@
 using boost::asio::ip::tcp;
 
 #ifdef SENTRY_HOST_NAME
-const std::string host = SENTRY_HOST_NAME const std::string protocol = "https";
+const std::string host = SENTRY_HOST_NAME;
+const std::string protocol = "https";
 #else
 const std::string host = "sentry.io";
 const std::string protocol = "https";
@@ -28,7 +29,7 @@ std::string last_error_type = "";
 //const std::string host = "127.0.0.1";
 #endif
 
-#if !defined(SENTRY_PROJECT_KEY) or !defined(SENTRY_PROJECT_ID)
+#if !defined(SENTRY_PROJECT_KEY) || !defined(SENTRY_PROJECT_ID)
 #error "sentry project info not provided"
 #endif
 const std::string api_path_minidump = "/api/" SENTRY_PROJECT_ID "/minidump/";
@@ -284,8 +285,9 @@ std::string create_mini_dump(EXCEPTION_POINTERS *pep) noexcept
 int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump = true) noexcept
 {
 	try {
-		boost::asio::ssl::context context(boost::asio::ssl::context::sslv23);
-
+		boost::asio::ssl::context context(boost::asio::ssl::context::tls_client);
+		context.set_options(boost::asio::ssl::context::default_workarounds | boost::asio::ssl::context::no_sslv2 | boost::asio::ssl::context::no_sslv3 |
+				    boost::asio::ssl::context::no_tlsv1 | boost::asio::ssl::context::no_tlsv1_1);
 		context.set_default_verify_paths();
 
 		boost::asio::io_service io_service;
@@ -301,13 +303,29 @@ int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump
 		while (error && endpoint_iterator != end) {
 			ssl_socket.lowest_layer().close();
 			boost::asio::connect(ssl_socket.lowest_layer(), endpoint_iterator, error);
-
-			if (!error) {
-				ssl_socket.set_verify_mode(boost::asio::ssl::verify_none);
-				ssl_socket.handshake(boost::asio::ssl::stream_base::client);
-				break;
+			if (error) {
+				++endpoint_iterator;
+				continue;
 			}
-			endpoint_iterator++;
+
+			if (SSL_set_tlsext_host_name(ssl_socket.native_handle(), host.c_str()) != 1) {
+				error = boost::system::error_code(static_cast<int>(::ERR_get_error()), boost::asio::error::get_ssl_category());
+				++endpoint_iterator;
+				continue;
+			}
+
+			ssl_socket.set_verify_mode(boost::asio::ssl::verify_none);
+
+			try {
+				ssl_socket.handshake(boost::asio::ssl::stream_base::client);
+			} catch (const boost::system::system_error &e) {
+				error = e.code();
+				++endpoint_iterator;
+				continue;
+			}
+
+			error.clear();
+			break;
 		}
 		if (error) {
 			throw boost::system::system_error(error);
