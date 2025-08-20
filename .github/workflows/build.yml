@@ -31,11 +31,9 @@ jobs:
       - uses: actions/checkout@v3
       - name: Get the version
         id: get_version
-        run: |
-          $ref = $env:GITHUB_REF
-          $version = $ref -replace '^refs/tags/', ''
-          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
-        shell: powershell
+        if: startsWith(github.ref, 'refs/tags/')
+        run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
+        shell: bash
       - name: Install Node.js
         uses: actions/setup-node@v3
         with:
@@ -126,7 +124,7 @@ jobs:
           path: distribute/a-file-updater
       - name: Sign updater
         working-directory: distribute/a-file-updater
-        run: logisign client --client logitech-cpg-sign-client --app streamlabs --files updater.exe
+        run: logisign client --client logitech-cpg-sign-client --app streamlabs --files slobs-updater.exe
       - name: Tar artifact for deployment
         working-directory: distribute
         run: tar -cvzf ${{env.TARGET_ARTIFACT}}.tar.gz a-file-updater
@@ -137,7 +135,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v1-node16
         with:
           aws-access-key-id: ${{secrets.AWS_RELEASE_ACCESS_KEY_ID}}
-          aws-secret-access-key: ${{secrets.AWS_RELEASE_ACCESS_KEY}}
+          aws-secret-access-key: ${{secrets.AWS_RELEASE_SECRET_ACCESS_KEY}}
           aws-region: us-west-2
       - name: Deploy
         working-directory: distribute
