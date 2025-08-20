@@ -1,6 +1,8 @@
 permissions:
   contents: read
 name: Clang Format Check
+permissions:
+  contents: read
 
 on:
   push:
