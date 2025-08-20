@@ -31,9 +31,11 @@ jobs:
       - uses: actions/checkout@v3
       - name: Get the version
         id: get_version
-        if: startsWith(github.ref, 'refs/tags/')
-        run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
-        shell: bash
+        run: |
+          $ref = $env:GITHUB_REF
+          $version = $ref -replace '^refs/tags/', ''
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        shell: powershell
       - name: Install Node.js
         uses: actions/setup-node@v3
         with:
@@ -107,8 +109,11 @@ jobs:
     steps:
       - name: Get the version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
-        shell: bash
+        run: |
+          $ref = $env:GITHUB_REF
+          $version = $ref -replace '^refs/tags/', ''
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        shell: powershell
       - name: Clean workspace
         run: |
           echo "Cleaning workspace..."
@@ -127,15 +132,15 @@ jobs:
         run: tar -cvzf ${{env.TARGET_ARTIFACT}}.tar.gz a-file-updater
         env:
           TARGET_ARTIFACT: slobs_updater-${{ steps.get_version.outputs.VERSION }}-win64
-        shell: bash
+        shell: powershell
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1-node16
         with:
           aws-access-key-id: ${{secrets.AWS_RELEASE_ACCESS_KEY_ID}}
-          aws-secret-access-key: ${{secrets.AWS_RELEASE_SECRET_ACCESS_KEY}}
+          aws-secret-access-key: ${{secrets.AWS_RELEASE_ACCESS_KEY}}
           aws-region: us-west-2
       - name: Deploy
         working-directory: distribute
         run: aws s3 cp ${{env.TARGET_ARTIFACT}}.tar.gz s3://${{env.RELEASE_BUCKET}} --acl public-read
         env:
-          TARGET_ARTIFACT: slobs_updater-${{ steps.get_version.outputs.VERSION }}-win64
+          TARGET_ARTIFACT: slobs_updater-${{ steps.get_version.outputs.VERSION }}-win64s
