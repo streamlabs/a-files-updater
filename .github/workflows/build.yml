@@ -152,13 +152,6 @@ jobs:
         env:
           TARGET_ARTIFACT: slobs_updater-${{ steps.get_version.outputs.VERSION }}-win64
         shell: bash
-      - name: Install AWS CLI
-        run: |
-          Invoke-WebRequest -Uri https://awscli.amazonaws.com/AWSCLIV2.msi -OutFile AWSCLIV2.msi
-          msiexec.exe /i AWSCLIV2.msi /quiet /qn /norestart
-          $env:Path += ";C:\Program Files\Amazon\AWSCLIV2"
-          aws --version
-        shell: powershell
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1-node16
         with:
