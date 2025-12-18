@@ -1111,8 +1111,8 @@ bool callbacks_impl::prompt_file_removal()
 	trim_trailing_nuls(s_install);
 
 	std::wstring s_body = ConvertToUtf16WS(boost::locale::translate(
-		"Streamlabs Desktop is installed in a custom folder:\r\n\r\n"
-		"To complete this update, Streamlabs needs to remove outdated app files from that folder.\r\n\r\n"
+		"Streamlabs Desktop is installed in a custom folder.\r\n\r\n"
+		"To complete this update, Streamlabs needs to remove files from that folder.\r\n\r\n"
 		"If this folder also contains your own files (recordings, exports, scene backups, etc.).\r\n"
 		"Choose Keep to do update without removing any files."));
 	trim_trailing_nuls(s_body);
