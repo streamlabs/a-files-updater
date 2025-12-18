@@ -28,6 +28,8 @@ async function run_tests() {
         // testinfo.selfBlockingFile = true;
         // testinfo.selfLockingFile = true;
         //testinfo.systemFolder = true;
+        testinfo.customFolder = true;
+
         testinfo.runAsInteractive = 1;
         //testinfo.wrong_arguments = true;
         //testinfo.expectedResult = "filesnotchanged"

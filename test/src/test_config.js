@@ -46,6 +46,7 @@ exports.gettestinfo = function (testname) {
     block_file_number: 10,
     wrong_arguments: false,
     systemFolder: false,
+    customFolder: false,
     corruptBackuped: false,
     version_details: "good", // empty, nofile
     //sentry emulator

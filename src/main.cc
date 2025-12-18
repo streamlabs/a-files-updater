@@ -73,6 +73,12 @@ void ShowInfo(const std::string &message)
 	}
 }
 
+static inline void trim_trailing_nuls(std::wstring &s)
+{
+	while (!s.empty() && s.back() == L'\0')
+		s.pop_back();
+}
+
 struct bandwidth_chunk {
 	high_resolution_clock::time_point time_point;
 	size_t chunk_size;
@@ -187,6 +193,7 @@ struct callbacks_impl : public install_callbacks,
 	void updater_complete() final {}
 
 	bool prompt_user(const char *pVersion, const char *pDetails);
+	bool prompt_file_removal();
 };
 
 callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
@@ -460,24 +467,42 @@ void callbacks_impl::downloader_preparing(bool connected)
 	LONG_PTR data = GetWindowLongPtr(frame, GWLP_USERDATA);
 	auto ctx = reinterpret_cast<callbacks_impl *>(data);
 
-	std::wstring checking_label = L"";
+	if (ctx->prompting) {
+		return;
+	}
+
+	std::wstring checking_label;
 	if (connected) {
 		checking_label = ConvertToUtf16WS(boost::locale::translate("Checking local files..."));
 	} else {
 		checking_label = ConvertToUtf16WS(boost::locale::translate("Connecting to server..."));
 	}
+	trim_trailing_nuls(checking_label);
+
+	ShowWindow(ctx->continue_button, SW_HIDE);
+	ShowWindow(ctx->cancel_button, SW_HIDE);
+	ShowWindow(ctx->kill_button, SW_HIDE);
+
+	EnableWindow(ctx->continue_button, TRUE);
+	EnableWindow(ctx->cancel_button, TRUE);
+	EnableWindow(ctx->kill_button, TRUE);
+
+	ctx->update_btn_label = ConvertToUtf16WS(boost::locale::translate("Upgrade"));
+	ctx->remind_btn_label = ConvertToUtf16WS(boost::locale::translate("Later"));
+	trim_trailing_nuls(ctx->update_btn_label);
+	trim_trailing_nuls(ctx->remind_btn_label);
 
 	HDC hdc = GetDC(frame);
 	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
 
 	progress_label_rect = {0};
-	DrawText(hdc, checking_label.c_str(), -1, &progress_label_rect, DT_CALCRECT | DT_NOCLIP);
+	DrawTextW(hdc, checking_label.c_str(), -1, &progress_label_rect, DT_CALCRECT | DT_NOCLIP);
 	progress_label_rect.right -= progress_label_rect.left;
 
 	std::wstring label(fmt::format(ctx->label_format, 9999, 9999, 100.00));
 
 	RECT progress_with_numbers = {0};
-	DrawText(hdc, checking_label.c_str(), -1, &progress_with_numbers, DT_CALCRECT | DT_NOCLIP);
+	DrawTextW(hdc, label.c_str(), -1, &progress_with_numbers, DT_CALCRECT | DT_NOCLIP);
 	progress_with_numbers.right -= progress_with_numbers.left;
 
 	if (progress_label_rect.right < progress_with_numbers.right)
@@ -974,6 +999,137 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	prompting = false;
 	return shouldUpdate;
 }
+bool callbacks_impl::prompt_file_removal()
+{
+	should_cancel = false;
+	should_continue = false;
+	should_kill_blockers = false;
+
+	std::wstring wc_title = ConvertToUtf16WS(boost::locale::translate("Old File Removal"));
+	trim_trailing_nuls(wc_title);
+
+	std::wstring s_install = ConvertToUtf16WS(boost::locale::translate("Install location: "));
+	trim_trailing_nuls(s_install);
+
+	std::wstring s_body = ConvertToUtf16WS(boost::locale::translate(
+		"This update may require removing old files from the installation directory.\r\n"
+		"Your installation appears to be in a custom location. To ensure the update completes successfully, "
+		"the updater needs permission to remove outdated files.\r\n"
+		"Would you like to allow the updater to remove old files during this update?"));
+	trim_trailing_nuls(s_body);
+
+	const std::wstring appdir = params.app_dir.native(); // or .wstring()
+	std::wstring wc_details;
+	wc_details.reserve(s_install.size() + appdir.size() + 4 + s_body.size() + 8);
+	wc_details += s_install;
+	wc_details += appdir;
+	wc_details += L"\r\n\r\n";
+	wc_details += s_body;
+
+	std::wstring allow = ConvertToUtf16WS(boost::locale::translate("Allow"));
+	std::wstring skip  = ConvertToUtf16WS(boost::locale::translate("Skip"));
+	trim_trailing_nuls(allow);
+	trim_trailing_nuls(skip);
+
+	update_btn_label = allow;
+	remind_btn_label = skip;
+
+	prompting = true;
+
+	ShowWindow(frame, SW_SHOWNORMAL);
+	ShowWindow(progress_worker, SW_HIDE);
+
+	ShowWindow(kill_button, SW_HIDE);
+	ShowWindow(blockers_list, SW_SHOW);
+	ShowWindow(continue_button, SW_SHOW);
+	ShowWindow(cancel_button, SW_SHOW);
+
+	EnableWindow(continue_button, TRUE);
+	EnableWindow(cancel_button, TRUE);
+	EnableWindow(kill_button, TRUE);
+
+	RECT rcClient{};
+	GetClientRect(frame, &rcClient);
+
+	int calc_w = (rcClient.right - rcClient.left) - (ui_padding * 2);
+	if (calc_w < ui_min_width)
+		calc_w = ui_min_width;
+
+	HDC hdc = GetDC(frame);
+	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
+
+	progress_label_rect = {0};
+	DrawTextW(hdc, wc_title.c_str(), -1, &progress_label_rect, DT_CALCRECT | DT_NOCLIP);
+	progress_label_rect.right -= progress_label_rect.left;
+
+	RECT rcCalc = {0, 0, calc_w, 0};
+	DrawTextW(hdc, wc_details.c_str(), -1, &rcCalc, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL);
+
+	blockers_list_rect = {0};
+	blockers_list_rect.right  = calc_w;
+	blockers_list_rect.bottom = rcCalc.bottom - rcCalc.top;
+
+	if (progress_label_rect.right < calc_w)
+		progress_label_rect.right = calc_w;
+
+	SelectObject(hdc, hfontOld);
+	ReleaseDC(frame, hdc);
+
+	repostionUI();
+
+	SetWindowTextW(progress_label, wc_title.c_str());
+	SetWindowTextW(blockers_list, wc_details.c_str());
+	SendMessageW(blockers_list, EM_SETSEL, 0, 0); // top
+
+	SetWindowTextW(continue_button, allow.c_str());
+	SetWindowTextW(cancel_button, skip.c_str());
+
+	RedrawWindow(continue_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+	RedrawWindow(cancel_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+
+	MSG msg;
+	bool allowRemoval = false;
+
+	while (GetMessage(&msg, NULL, 0, 0) > 0) {
+		if (!IsDialogMessage(frame, &msg)) {
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+
+		if (should_cancel) {
+			should_cancel = false;
+			allowRemoval = false;
+			break;
+		}
+		if (should_continue) {
+			should_continue = false;
+			allowRemoval = true;
+			break;
+		}
+	}
+
+	ShowWindow(blockers_list, SW_HIDE);
+	ShowWindow(continue_button, SW_HIDE);
+	ShowWindow(cancel_button, SW_HIDE);
+
+	SetWindowTextW(blockers_list, L"");
+	SetWindowTextW(progress_label, L"");
+
+	EnableWindow(continue_button, TRUE);
+	EnableWindow(cancel_button, TRUE);
+	EnableWindow(kill_button, TRUE);
+
+	SetWindowTextW(continue_button, continue_label.c_str());
+	SetWindowTextW(cancel_button, cancel_label.c_str());
+
+	update_btn_label = ConvertToUtf16WS(boost::locale::translate("Upgrade"));
+	remind_btn_label = ConvertToUtf16WS(boost::locale::translate("Later"));
+	trim_trailing_nuls(update_btn_label);
+	trim_trailing_nuls(remind_btn_label);
+
+	prompting = false;
+	return allowRemoval;
+}
 
 LRESULT CALLBACK ProgressLabelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
@@ -1229,6 +1385,15 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		//act as if we updated so app will be launched
 		cb_impl.success();
 	} else {
+		if (!params.enable_removing_old_files) {
+			if (cb_impl.prompt_file_removal()) {
+				params.enable_removing_old_files = true;
+				log_warn("User allowed file removal for this update.");
+			} else {
+				log_warn("User declined file removal. Old files will not be removed during update.");
+			}
+		}
+
 		auto client_deleter = [](struct update_client *client) { destroy_update_client(client); };
 
 		std::unique_ptr<struct update_client, decltype(client_deleter)> client(create_update_client(&params), client_deleter);

@@ -13,6 +13,12 @@ exports.test_update = async function (testinfo) {
   if (testinfo.more_log_output)
     console.log("--- Test files will be generated.");
 
+  if (testinfo.customFolder) {
+      testinfo.appPathExtra = "Program Files CustomApp";
+      const testfilesDir = path.join(__dirname, "..", "testfiles");
+      testinfo.initialDir = path.join(testfilesDir, "i件Џnitial" + testinfo.appPathExtra);
+  }
+
   await generate_files.generate_test_files(testinfo)
 
   if (testinfo.more_log_output)
