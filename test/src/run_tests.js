@@ -80,7 +80,12 @@ async function run_tests() {
         if (test_result != 0) {
             failed_test_names.push(testinfo.testName);
         }
-
+        testinfo = test_config.gettestinfo(" //test update in custom folder ");
+        testinfo.customFolder = true;
+        test_result = await run_test.test_update(testinfo);
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
         testinfo = test_config.gettestinfo(" //test wrong content ");
         testinfo.let_wrong_header = true;
         test_result = await run_test.test_update(testinfo);

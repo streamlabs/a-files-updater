@@ -203,6 +203,7 @@ private:
 		std::wstring accept_label;
 		std::wstring decline_label;
 		bool show_decline_button = true;
+		bool default_accept = true;
 	};
 
 	bool show_dialog(const DialogState &state);
@@ -210,8 +211,9 @@ private:
 	void show_ui_elements(bool show_buttons = true, bool show_kill = false);
 	void hide_ui_elements();
 	void reset_ui_labels();
-	bool run_message_loop();
+	bool run_message_loop(bool default_accept);
 	std::wstring format_update_details(const std::string &detailsStr);
+	static void CALLBACK auto_accept_timer(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 };
 
 callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
@@ -952,7 +954,7 @@ void callbacks_impl::reset_ui_labels()
 	trim_trailing_nuls(remind_btn_label);
 }
 
-bool callbacks_impl::run_message_loop()
+bool callbacks_impl::run_message_loop(bool default_accept)
 {
 	MSG msg;
 	bool user_accepted = false;
@@ -978,6 +980,19 @@ bool callbacks_impl::run_message_loop()
 	return user_accepted;
 }
 
+void CALLBACK callbacks_impl::auto_accept_timer(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
+{
+	LONG_PTR data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+	auto ctx = reinterpret_cast<callbacks_impl *>(data);
+
+	if (ctx && ctx->prompting) {
+		ctx->should_continue = true;
+		PostMessage(hwnd, WM_NULL, 0, 0);
+	}
+
+	KillTimer(hwnd, idEvent);
+}
+
 bool callbacks_impl::show_dialog(const DialogState &state)
 {
 	should_cancel = false;
@@ -985,6 +1000,18 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 	should_kill_blockers = false;
 
 	prompting = true;
+
+	if (!params.interactive) {
+		log_info("Non-interactive mode: dialog will auto-%s after 30 seconds", state.default_accept ? "accept" : "decline");
+
+		if (!state.default_accept) {
+			should_cancel = true;
+			prompting = false;
+			return false;
+		}
+
+		SetTimer(frame, 2, 30000, &auto_accept_timer);
+	}
 
 	calculate_text_dimensions(state.title, state.content, progress_label_rect, blockers_list_rect);
 	show_ui_elements(true, false);
@@ -1005,7 +1032,11 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 	RedrawWindow(continue_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
 	RedrawWindow(cancel_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
 
-	bool result = run_message_loop();
+	bool result = run_message_loop(state.default_accept);
+
+	if (!params.interactive) {
+		KillTimer(frame, 2);
+	}
 
 	hide_ui_elements();
 	reset_ui_labels();
@@ -1016,49 +1047,71 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 
 std::wstring callbacks_impl::format_update_details(const std::string &detailsStr)
 {
-	const wchar_t *wc_dash = L"-";
-	const wchar_t *wc_hash = L"#";
-	const wchar_t *wc_bullet = L"\r\n    \u2022 ";
-	const wchar_t *wc_break = L"\r\n";
-
 	std::wstring wc_details = ConvertToUtf16WS(boost::locale::translate(detailsStr.c_str()));
 
-	std::list<std::pair<std::wstring, std::wstring>> tagsToHeadings;
-	tagsToHeadings.push_back(std::make_pair(L"#hotfixes", L"Hotfix Changes"));
-	tagsToHeadings.push_back(std::make_pair(L"#features", L"New Features"));
-	tagsToHeadings.push_back(std::make_pair(L"#generalfixes", L"General Fixes"));
+	{
+		std::wstring out;
+		out.reserve(wc_details.size() + 16);
 
-	size_t replacePos = 0;
-	for (const auto &tagHeadingPair : tagsToHeadings) {
-		replacePos = wc_details.find(tagHeadingPair.first);
-		if (replacePos != std::wstring::npos) {
-			wc_details.replace(replacePos, tagHeadingPair.first.size(), tagHeadingPair.second);
-			if (replacePos != 0) {
-				wc_details.insert(replacePos, wc_break);
-				wc_details.insert(replacePos, wc_break);
-				replacePos += (wcslen(wc_break) * 2);
+		for (size_t i = 0; i < wc_details.size(); ++i) {
+			const wchar_t c = wc_details[i];
+
+			if (c == L'\r') {
+				if (i + 1 < wc_details.size() && wc_details[i + 1] == L'\n') {
+					out.append(L"\r\n");
+					++i;
+				} else {
+					out.append(L"\r\n");
+				}
+			} else if (c == L'\n') {
+				out.append(L"\r\n");
+			} else {
+				out.push_back(c);
 			}
 		}
+
+		wc_details.swap(out);
 	}
 
-	replacePos = wc_details.find(wc_hash);
-	while (replacePos != std::wstring::npos) {
-		if (replacePos != 0) {
-			wc_details.insert(replacePos, wc_break);
-			wc_details.insert(replacePos, wc_break);
-			replacePos += (wcslen(wc_break) * 2);
+	const wchar_t *wc_double = L"\r\n\r\n";
+	const wchar_t *wc_single = L"\r\n";
+	const wchar_t *wc_bullet = L"    \u2022 ";
+
+	struct {
+		const wchar_t *tag;
+		const wchar_t *heading;
+	} tags[] = {{L"#hotfixes", L"Hotfix Changes"}, {L"#features", L"New Features"}, {L"#generalfixes", L"General Fixes"}};
+
+	for (const auto &t : tags) {
+		size_t pos = 0;
+		while ((pos = wc_details.find(t.tag, pos)) != std::wstring::npos) {
+			wc_details.replace(pos, wcslen(t.tag), t.heading);
+			pos += wcslen(t.heading);
 		}
-		wc_details.replace(replacePos, 1, L"");
-		replacePos = wc_details.find(wc_hash, replacePos + 1);
 	}
 
-	replacePos = wc_details.find(wc_dash);
-	while (replacePos != std::wstring::npos) {
-		wc_details.replace(replacePos, wcslen(wc_dash), wc_bullet);
-		replacePos = wc_details.find(wc_dash, replacePos + wcslen(wc_bullet));
+	size_t pos = 0;
+	while ((pos = wc_details.find(L"#", pos)) != std::wstring::npos) {
+		wc_details.erase(pos, 1);
 	}
 
-	wc_details.insert(wc_details.length() - 1, wc_break);
+	pos = 0;
+	while ((pos = wc_details.find(L"-", pos)) != std::wstring::npos) {
+		bool at_line_start = (pos == 0) || (pos >= 2 && wc_details.substr(pos - 2, 2) == wc_single);
+
+		bool has_space_after = (pos + 1 < wc_details.size() && wc_details[pos + 1] == L' ');
+
+		if (at_line_start && has_space_after) {
+			wc_details.replace(pos, 2, wc_bullet);
+			pos += wcslen(wc_bullet);
+		} else {
+			pos += 1;
+		}
+	}
+
+	if (wc_details.empty() || wc_details.substr(wc_details.size() - 4) != wc_double) {
+		wc_details += wc_double;
+	}
 
 	return wc_details;
 }
@@ -1086,7 +1139,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	}
 
 	DialogState state;
-	
+
 	if (detailsStr.empty()) {
 		state.title = ConvertToUtf16WS(boost::locale::translate("There's an update available. Would you like to install?"));
 		state.content = L"New version: " + wc_version;
@@ -1099,6 +1152,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 	state.accept_label = update_btn_label;
 	state.decline_label = remind_btn_label;
 	state.show_decline_button = !forceUpdate;
+	state.default_accept = true;
 
 	return show_dialog(state);
 }
@@ -1136,6 +1190,7 @@ bool callbacks_impl::prompt_file_removal()
 	state.accept_label = allow;
 	state.decline_label = keep;
 	state.show_decline_button = true;
+	state.default_accept = true;
 
 	update_btn_label = allow;
 	remind_btn_label = keep;
