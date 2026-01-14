@@ -1162,7 +1162,7 @@ BOOL HasInstalled_VC_redistx64()
 		std::vector<std::wstring> versions;
 		boost::split(versions, version, boost::is_any_of("."));
 
-		// "Version"="14.30.30704"
+		// "Version"="14.50.35719.0"
 		if (versions.size() == 3) {
 			if (_wtoi(versions[0].c_str()) < 14)
 				return FALSE;
@@ -1170,14 +1170,14 @@ BOOL HasInstalled_VC_redistx64()
 			if (_wtoi(versions[0].c_str()) > 14)
 				return TRUE;
 
-			if (_wtoi(versions[1].c_str()) < 30)
+			if (_wtoi(versions[1].c_str()) < 50)
 				return FALSE;
 
-			if (_wtoi(versions[1].c_str()) > 30)
+			if (_wtoi(versions[1].c_str()) > 50)
 				return TRUE;
 
-			// 14.30.X
-			if (_wtoi(versions[2].c_str()) >= 30704)
+			// 14.50.X
+			if (_wtoi(versions[2].c_str()) >= 35719)
 				return TRUE;
 		}
 	} else {
