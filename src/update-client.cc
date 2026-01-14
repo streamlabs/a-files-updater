@@ -429,7 +429,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 		local_ssl_socket.lowest_layer().connect(*endpoint_iterator++, error);
 	} while (error && endpoint_iterator != tcp::resolver::iterator{});
 
-if (error.failed()) {
+	if (error.failed()) {
 		installer_events->installer_package_failed(packageName, "HTTP(2) " + error.message());
 		return;
 	}
@@ -438,6 +438,12 @@ if (error.failed()) {
 	int32_t timeout = 3000;
 	::setsockopt(local_ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
 	::setsockopt(local_ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
+
+	// Set SNI hostname for TLS - required for CloudFlare and other CDNs
+	if (!SSL_set_tlsext_host_name(local_ssl_socket.native_handle(), domainName.c_str())) {
+		installer_events->installer_package_failed(packageName, "HTTP(2.5) Failed to set SNI hostname");
+		return;
+	}
 
 	// Handshake
 	local_ssl_socket.handshake(ssl::stream_base::handshake_type::client, error);
@@ -449,9 +455,15 @@ if (error.failed()) {
 
 	// Send the first request
 	http::request<http::empty_body> local_request;
-	local_request = {http::verb::get, "https://" + url, 11};
+	std::string target = url.substr(domainName.length());
+	if (target.empty())
+		target = "/";
+
+	local_request = {http::verb::get, target, 11};
 	local_request.set(http::field::host, domainName);
-	local_request.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+	local_request.set(http::field::user_agent, "Streamlabs Desktop updater application/1.0," BOOST_BEAST_VERSION_STRING);
+	local_request.set(http::field::accept, "*/*");
+
 	http::write(local_ssl_socket, local_request, error);
 
 	if (error.failed()) {
@@ -682,7 +694,7 @@ void update_client::checkup_manifest(blockers_map_t &blockers)
 			to = local_manifest.size() * (i + 1) / max_threads;
 		else
 			to = local_manifest.size();
-		workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), from, to));
+		workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), static_cast<int>(from), static_cast<int>(to)));
 		from = to;
 	}
 
