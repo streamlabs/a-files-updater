@@ -259,7 +259,7 @@ async function generate_server_dir(testinfo) {
     await generate_manifest(testinfo)
   }
   
-  if( testinfo.version_details == "good") {
+  if (testinfo.version_details == "good") {
     const jsonfile = path.join(testinfo.serverDir, "update.json");
     fse.outputFileSync(jsonfile, "");
     const jsoncontent = {
@@ -268,9 +268,18 @@ async function generate_server_dir(testinfo) {
       rollout: { default: 100 },
       restricted: false,
       fallbackVersion: testinfo.fallbackVersion,
-      forceUpdate: false, // force update to this version
+      forceUpdate: false,
       details:
-        "Release Notes:\n- Preview build for early testing.\n- Introduces experimental feature flags.\n- Improves core‑engine performance under load.\n- Fixes assorted stability and memory‑leak issues found in 1.18.x.\n- Updates documentation and localization assets.\nBuild date: 2025‑05‑13.",
+        "Release Notes:\n\n" +
+        "#features\n" +
+        "- Preview build for early testing.\n" +
+        "- Introduces experimental feature flags.\n\n" +
+        "#generalfixes\n" +
+        "- Improves core-engine performance under load.\n" +
+        "- Fixes assorted stability and memory-leak issues found in 1.18.x.\n\n" +
+        "#hotfixes\n" +
+        "- Updates documentation and localization assets.\n\n" +
+        "Build date: 2025.05.13.",
     };
     fse.writeJsonSync(jsonfile, jsoncontent, { spaces: 2 });
   } else if (testinfo.version_details == "empty") {
