@@ -624,17 +624,33 @@ void update_client::checkup_files(struct blockers_map_t &blockers, int from, int
 					if (key.find("Uninstall") == 0 || key.find("installername") == 0) {
 						entry_update_info.remove_at_update = false;
 						entry_update_info.skip_update = true;
-					} 
+					}
 
 					manifest.emplace(std::make_pair(key, entry_update_info));
 				} else {
-					if (key.find("resources/app.asar.unpacked/node_modules") == 0) {
+					std::string lower_key = key;
+					std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(), ::tolower);
+					bool mark_remove = false;
+
+					if (lower_key.find("resources/app.asar.unpacked/node_modules") == 0) {
+						mark_remove = true;
+					} else {
+						fs::path kpath(key);
+						std::string fname = kpath.filename().u8string();
+						std::transform(fname.begin(), fname.end(), fname.begin(), ::tolower);
+						if (fname == "msvcp140.dll" || fname == "vcruntime140.dll" || fname == "vcruntime140_1.dll") {
+							mark_remove = true;
+						}
+					}
+
+					if (mark_remove) {
 						auto entry_update_info = manifest_entry_t(std::string(""));
 						entry_update_info.compared_to_local = true;
 						entry_update_info.remove_at_update = true;
 						manifest.emplace(std::make_pair(key, entry_update_info));
 					}
 				}
+
 				local_manifest.at(i).second = checksum.empty() ? calculate_files_checksum_safe(entry) : checksum;
 				continue;
 			}
