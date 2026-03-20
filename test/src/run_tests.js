@@ -30,7 +30,7 @@ async function run_tests() {
         //testinfo.selfVirtualCamBlocking = true;
         //testinfo.systemFolder = true;
         //testinfo.customFolder = true;
-        testinfo.selfVirtualCamBlocking = true;
+        //testinfo.selfVirtualCamBlocking = true;
 
         testinfo.runAsInteractive = 1;
         //testinfo.wrong_arguments = true;
