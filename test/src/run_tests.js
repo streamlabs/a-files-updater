@@ -24,11 +24,13 @@ async function run_tests() {
         //testinfo.let_404 = true;
         //testinfo.morebigfiles = true;
         //testinfo.expectedResult = "filescorrupted"
-        // testinfo.selfBlockersCount = 5;
-        // testinfo.selfBlockingFile = true;
-        // testinfo.selfLockingFile = true;
+        //testinfo.selfBlockersCount = 5;
+        //testinfo.selfBlockingFile = true;
+        //testinfo.selfLockingFile = true;
+        //testinfo.selfVirtualCamBlocking = true;
         //testinfo.systemFolder = true;
-        testinfo.customFolder = true;
+        //testinfo.customFolder = true;
+        testinfo.selfVirtualCamBlocking = true;
 
         testinfo.runAsInteractive = 1;
         //testinfo.wrong_arguments = true;
@@ -182,6 +184,13 @@ async function run_tests() {
         testinfo = test_config.gettestinfo(" //test some exe file blocked by rinnig it   ");
         testinfo.selfBlockingFile = true;
         testinfo.selfBlockersCount = 5;
+        test_result = await run_test.test_update(testinfo);
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
+        testinfo = test_config.gettestinfo(" //test virtualcam dll blocked by external process  ");
+        testinfo.selfVirtualCamBlocking = true;
         test_result = await run_test.test_update(testinfo);
         if (test_result != 0) {
             failed_test_names.push(testinfo.testName);

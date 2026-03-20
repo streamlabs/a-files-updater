@@ -72,7 +72,7 @@ struct pid_callbacks {
  */
 
 struct blocker_callbacks {
-	virtual void blocker_start() = 0;
+	virtual void blocker_start(bool is_virtualcam_phase) = 0;
 	virtual int blocker_waiting_for(const std::wstring &processes_list, bool list_changed) = 0;
 	virtual void blocker_wait_complete() = 0;
 };

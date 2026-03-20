@@ -1,7 +1,17 @@
 #include "update-blockers.hpp"
 #include "logger/log.h"
 
+#include <algorithm>
+
 #pragma comment(lib, "Rstrtmgr.lib")
+
+bool is_virtualcam_file(const fs::path &relative_path)
+{
+	std::wstring filename = relative_path.filename().wstring();
+	std::transform(filename.begin(), filename.end(), filename.begin(), ::towlower);
+	return filename == L"obs-virtualcam-module64.dll" ||
+	       filename == L"obs-virtualcam-module32.dll";
+}
 
 bool get_blockers_list(fs::path &check_path, blockers_map_t &blockers)
 {

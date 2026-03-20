@@ -35,3 +35,6 @@ bool get_blockers_list(fs::path &check_path, blockers_map_t &blockers);
 bool check_file_updatable(fs::path &check_path, bool check_read, blockers_map_t &blockers);
 
 bool get_blockers_names(blockers_map_t &blockers);
+
+// check if the relative file path refers to a virtual camera DLL
+bool is_virtualcam_file(const fs::path &relative_path);

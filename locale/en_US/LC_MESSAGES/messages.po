@@ -54,11 +54,21 @@ msgstr "Checking local files..."
 msgid "Downloading"
 msgstr "Downloading"
 
-#: src\main.cc:617
+#: src\main.cc
 msgid ""
-"The following programs are preventing Streamlabs Desktop from updating :"
+"These apps are currently using our virtual webcam driver, which prevents "
+"updating.\n"
+"Please close them until the update is finished:"
 msgstr ""
-"The following programs are preventing Streamlabs Desktop from updating :"
+"These apps are currently using our virtual webcam driver, which prevents "
+"updating.\n"
+"Please close them until the update is finished:"
+
+#: src\main.cc
+msgid ""
+"Please close these apps until the update is finished:"
+msgstr ""
+"Please close these apps until the update is finished:"
 
 #: src\main.cc:677
 msgid ""

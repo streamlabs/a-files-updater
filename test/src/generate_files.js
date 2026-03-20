@@ -16,6 +16,7 @@ const selfblockingfile_name = "file_self_blocker";
 
 
 let self_blocking_process=[];
+let self_locked_file_handles=[];
 
 async function generate_file(filedir, filename, filecontentextended = "", emptyfile = false, hugefile = false) {
   return new Promise((resolve, reject) => {
@@ -340,7 +341,19 @@ async function generate_initial_dir(testinfo, update_subdirpath = "") {
   {
     await put_file_blocking(testinfo, selfblockingfile_init, update_subdirpath, update_subdirpath === testinfo.initialDir, i);
   }
-  
+
+  if (testinfo.selfVirtualCamBlocking && update_subdirpath === testinfo.initialDir) {
+    const vcamPath = path.join(update_subdirpath, "data", "obs-plugins", "64bit", "obs-virtualcam-module64.dll");
+    if (fs.existsSync(vcamPath)) {
+      // Open the file to hold a lock. The updater's CreateFile with share mode 0
+      // will fail with ERROR_SHARING_VIOLATION, simulating Chrome/Zoom holding the DLL.
+      const fd = fs.openSync(vcamPath, 'r+');
+      self_locked_file_handles.push(fd);
+      if (testinfo.more_log_output)
+        console.log("Locked virtualcam DLL: " + vcamPath);
+    }
+  }
+
   if(testinfo.more_log_output)
     console.log("Finish generate_initial_dir");
 }
@@ -413,6 +426,14 @@ clean_test_dir = function (dirpath) {
 }
 
 exports.clean_after_test = function (testinfo, force) {
+  self_locked_file_handles.forEach(function(fd){
+    try {
+      fs.closeSync(fd);
+      console.log("Closed locked virtualcam file handle");
+    } catch (e) {}
+  });
+  self_locked_file_handles = [];
+
   self_blocking_process.forEach(function(item){
     console.log("Close file blocking process");
     //kill.treeKillSync(self_blocking_process.pid);

@@ -596,7 +596,7 @@ void update_client::check_resolve_timeout_callback_err(const boost::system::erro
  *#
  *############################################*/
 
-void update_client::checkup_files(struct blockers_map_t &blockers, int from, int to)
+void update_client::checkup_files(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers, int from, int to)
 {
 	for (int i = from; i < to; i++) {
 		fs::path entry = local_manifest.at(i).first;
@@ -605,8 +605,11 @@ void update_client::checkup_files(struct blockers_map_t &blockers, int from, int
 		fs::path cleaned_file_name = key_path.make_preferred();
 		std::string key = cleaned_file_name.u8string();
 
+		bool is_vcam = is_virtualcam_file(key_path);
+		blockers_map_t &target_blockers = is_vcam ? virtualcam_blockers : blockers;
+
 		std::string checksum;
-		bool is_updatable = check_file_updatable(entry, true, blockers);
+		bool is_updatable = check_file_updatable(entry, true, target_blockers);
 		if (is_updatable) {
 			checksum = calculate_files_checksum_safe(entry);
 		}
@@ -667,12 +670,12 @@ void update_client::checkup_files(struct blockers_map_t &blockers, int from, int
 		}
 
 		if (is_updatable) {
-			check_file_updatable(entry, false, blockers);
+			check_file_updatable(entry, false, target_blockers);
 		}
 	}
 }
 
-void update_client::checkup_manifest(blockers_map_t &blockers)
+void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &virtualcam_blockers)
 {
 	int max_threads = std::thread::hardware_concurrency();
 
@@ -710,7 +713,7 @@ void update_client::checkup_manifest(blockers_map_t &blockers)
 			to = local_manifest.size() * (i + 1) / max_threads;
 		else
 			to = local_manifest.size();
-		workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), static_cast<int>(from), static_cast<int>(to)));
+		workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), std::ref(virtualcam_blockers), static_cast<int>(from), static_cast<int>(to)));
 		from = to;
 	}
 
@@ -741,13 +744,24 @@ void update_client::process_manifest_results()
 
 	try {
 		blockers_map_t blockers;
-		checkup_manifest(blockers);
+		blockers_map_t virtualcam_blockers;
+		checkup_manifest(blockers, virtualcam_blockers);
 
-		if (blockers.list.size() > 0) {
+		// Compute virtualcam-only blockers: processes that block the virtualcam DLL
+		// but do NOT block any other files. If a process blocks both, it belongs
+		// in the generic dialog since closing it is required regardless.
+		blockers_map_t vcam_only_blockers;
+		for (auto &entry : virtualcam_blockers.list) {
+			DWORD pid = entry.first;
+			if (blockers.list.find(pid) == blockers.list.end()) {
+				vcam_only_blockers.list.insert(entry);
+			}
+		}
+
+		// Phase 1: Virtual camera blockers
+		if (current_blocker_phase == blocker_phase::virtualcam && vcam_only_blockers.list.size() > 0) {
 			std::wstring new_process_list_text;
-			for (auto it = blockers.list.begin(); it != blockers.list.end(); it++) {
-				//log_debug("Got blocker process info %i %ls", (*it).second.Process.dwProcessId, (*it).second.strAppName);
-
+			for (auto it = vcam_only_blockers.list.begin(); it != vcam_only_blockers.list.end(); it++) {
 				new_process_list_text += (*it).second.strAppName;
 				new_process_list_text += L" (";
 				new_process_list_text += std::to_wstring((*it).second.Process.dwProcessId);
@@ -757,7 +771,70 @@ void update_client::process_manifest_results()
 
 			if (show_user_blockers_list) {
 				show_user_blockers_list = false;
-				this->blocker_events->blocker_start();
+				this->blocker_events->blocker_start(true);
+			}
+
+			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
+
+			process_list_text = new_process_list_text;
+			int command = this->blocker_events->blocker_waiting_for(process_list_text, list_changed);
+
+			switch (command) {
+			case 1:
+				log_info("Got kill all command from ui for virtualcam blockers");
+				for (auto it = vcam_only_blockers.list.begin(); it != vcam_only_blockers.list.end(); it++) {
+					if ((*it).second.Process.dwProcessId != 0) {
+						HANDLE hProc = OpenProcess(PROCESS_TERMINATE, false, (*it).second.Process.dwProcessId);
+						if (hProc == NULL) {
+							log_error("Cannot open process %i to terminate it with error: %d", (*it).second.Process.dwProcessId,
+								  GetLastError());
+						} else {
+							if (!TerminateProcess(hProc, 1)) {
+								log_error("Failed to terminate process %i with error: %d", (*it).second.Process.dwProcessId,
+									  GetLastError());
+							}
+							CloseHandle(hProc);
+						}
+					}
+				}
+				break;
+			case 2: {
+				log_info("Got cancel command from ui on virtualcam blocker");
+				client_events->error(boost::locale::translate("Update was canceled."), "Canceled");
+				reset_work_threads_guards();
+				return;
+			} break;
+			};
+
+			wait_for_blockers.expires_from_now(boost::posix_time::seconds(1));
+			wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
+			return;
+		}
+
+		// Transition from virtualcam phase to generic phase
+		if (current_blocker_phase == blocker_phase::virtualcam) {
+			if (!show_user_blockers_list) {
+				this->blocker_events->blocker_wait_complete();
+				show_user_blockers_list = true;
+				process_list_text = L"";
+			}
+			current_blocker_phase = blocker_phase::generic;
+		}
+
+		// Phase 2: Generic blockers
+		if (blockers.list.size() > 0) {
+			std::wstring new_process_list_text;
+			for (auto it = blockers.list.begin(); it != blockers.list.end(); it++) {
+				new_process_list_text += (*it).second.strAppName;
+				new_process_list_text += L" (";
+				new_process_list_text += std::to_wstring((*it).second.Process.dwProcessId);
+				new_process_list_text += L")";
+				new_process_list_text += L"\r\n";
+			}
+
+			if (show_user_blockers_list) {
+				show_user_blockers_list = false;
+				this->blocker_events->blocker_start(false);
 			}
 
 			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
@@ -770,17 +847,16 @@ void update_client::process_manifest_results()
 				log_info("Got kill all command from ui");
 				for (auto it = blockers.list.begin(); it != blockers.list.end(); it++) {
 					if ((*it).second.Process.dwProcessId != 0) {
-						HANDLE explorer = NULL;
-						explorer = OpenProcess(PROCESS_TERMINATE, false, (*it).second.Process.dwProcessId);
-						if (explorer == NULL) {
+						HANDLE hProc = OpenProcess(PROCESS_TERMINATE, false, (*it).second.Process.dwProcessId);
+						if (hProc == NULL) {
 							log_error("Cannot open process %i to terminate it with error: %d", (*it).second.Process.dwProcessId,
 								  GetLastError());
 						} else {
-							if (TerminateProcess(explorer, 1)) {
-							} else {
+							if (!TerminateProcess(hProc, 1)) {
 								log_error("Failed to terminate process %i with error: %d", (*it).second.Process.dwProcessId,
 									  GetLastError());
 							}
+							CloseHandle(hProc);
 						}
 					}
 				}
@@ -794,13 +870,13 @@ void update_client::process_manifest_results()
 			};
 
 			wait_for_blockers.expires_from_now(boost::posix_time::seconds(1));
-
 			wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
 			return;
 		} else {
 			this->blocker_events->blocker_wait_complete();
 			show_user_blockers_list = true;
 			process_list_text = L"";
+			current_blocker_phase = blocker_phase::virtualcam;
 		}
 
 	} catch (update_exception_blocked &) {

@@ -178,7 +178,7 @@ struct callbacks_impl : public install_callbacks,
 	void pid_wait_finished(uint64_t pid) final {}
 	void pid_wait_complete() final {}
 
-	void blocker_start() final;
+	void blocker_start(bool is_virtualcam_phase) final;
 	int blocker_waiting_for(const std::wstring &processes_list, bool list_changed) final;
 	void blocker_wait_complete() final;
 
@@ -727,12 +727,19 @@ void callbacks_impl::downloader_complete(const bool success)
 	finished_downloading = success;
 }
 
-void callbacks_impl::blocker_start()
+void callbacks_impl::blocker_start(bool is_virtualcam_phase)
 {
 	ShowWindow(progress_worker, SW_HIDE);
 
-	std::wstring blocking_app_label =
-		ConvertToUtf16WS(boost::locale::translate("The following programs are preventing Streamlabs Desktop from updating :"));
+	std::wstring blocking_app_label;
+	if (is_virtualcam_phase) {
+		blocking_app_label = ConvertToUtf16WS(boost::locale::translate(
+			"These apps are currently using our virtual webcam driver, which prevents updating.\n"
+			"Please close them until the update is finished:"));
+	} else {
+		blocking_app_label =
+			ConvertToUtf16WS(boost::locale::translate("Please close these apps until the update is finished:"));
+	}
 
 	HDC hdc = GetDC(frame);
 	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
