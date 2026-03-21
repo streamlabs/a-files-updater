@@ -1,0 +1,335 @@
+#include "blocker-panel.hpp"
+#include "utils.hpp"
+#include "logger/log.h"
+
+#include <shellapi.h>
+#include <windowsx.h>
+#include <commctrl.h>
+
+#pragma comment(lib, "Shell32.lib")
+
+#define CLS_BLOCKER_LIST (3)
+
+static const int COL_NAME = 0;
+static const int COL_POPUP = 1;
+static const int POPUP_COL_WIDTH = 65;
+
+static const COLORREF link_color = RGB(128, 245, 210);
+static const COLORREF link_hover_color = RGB(180, 255, 235);
+static const COLORREF bg_color = RGB(12, 17, 22);
+
+blocker_panel::blocker_panel(HWND parent, int x, int y, int w, int h)
+{
+	hwnd_ = CreateWindowEx(0, WC_LISTVIEW, L"",
+			       WS_CHILD | WS_BORDER | LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | LVS_NOSORTHEADER, x, y, w, h, parent, NULL, NULL,
+			       NULL);
+
+	if (!hwnd_) {
+		LogLastError(L"blocker_panel CreateWindowEx");
+		return;
+	}
+
+	ListView_SetExtendedListViewStyle(hwnd_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+
+	ListView_SetBkColor(hwnd_, bg_color);
+	ListView_SetTextBkColor(hwnd_, bg_color);
+	ListView_SetTextColor(hwnd_, RGB(255, 255, 255));
+
+	LVCOLUMN col = {0};
+	col.mask = LVCF_WIDTH | LVCF_SUBITEM;
+	col.cx = w - POPUP_COL_WIDTH - GetSystemMetrics(SM_CXVSCROLL) - 4;
+	col.iSubItem = COL_NAME;
+	ListView_InsertColumn(hwnd_, COL_NAME, &col);
+
+	col.cx = POPUP_COL_WIDTH;
+	col.iSubItem = COL_POPUP;
+	ListView_InsertColumn(hwnd_, COL_POPUP, &col);
+
+	image_list_ = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 4, 4);
+	ListView_SetImageList(hwnd_, image_list_, LVSIL_SMALL);
+
+	hand_cursor_ = LoadCursor(NULL, IDC_HAND);
+
+	SetWindowSubclass(hwnd_, subclass_proc, CLS_BLOCKER_LIST, (DWORD_PTR)this);
+}
+
+blocker_panel::~blocker_panel()
+{
+	if (link_font_)
+		DeleteObject(link_font_);
+	if (hwnd_) {
+		RemoveWindowSubclass(hwnd_, subclass_proc, CLS_BLOCKER_LIST);
+		DestroyWindow(hwnd_);
+	}
+	if (image_list_)
+		ImageList_Destroy(image_list_);
+}
+
+void blocker_panel::show()
+{
+	ShowWindow(hwnd_, SW_SHOW);
+}
+
+void blocker_panel::hide()
+{
+	ShowWindow(hwnd_, SW_HIDE);
+}
+
+bool blocker_panel::is_visible() const
+{
+	return IsWindowVisible(hwnd_) != FALSE;
+}
+
+void blocker_panel::set_text(const wchar_t *)
+{
+}
+
+void blocker_panel::clear()
+{
+	ListView_DeleteAllItems(hwnd_);
+	ImageList_RemoveAll(image_list_);
+	blockers_.clear();
+}
+
+void blocker_panel::measure(HDC hdc, int max_width)
+{
+	int item_count = ListView_GetItemCount(hwnd_);
+	if (item_count <= 0)
+		item_count = 1;
+
+	int item_height = 24;
+	if (ListView_GetItemCount(hwnd_) > 0) {
+		RECT rc = {0};
+		ListView_GetItemRect(hwnd_, 0, &rc, LVIR_BOUNDS);
+		if (rc.bottom - rc.top > 0)
+			item_height = rc.bottom - rc.top;
+	}
+
+	rect_ = {0, 0, max_width, item_count * item_height + 4};
+}
+
+void blocker_panel::set_position(int x, int y, int w, int h)
+{
+	SetWindowPos(hwnd_, 0, x, y, w, h, SWP_ASYNCWINDOWPOS);
+
+	int name_col_width = w - POPUP_COL_WIDTH - GetSystemMetrics(SM_CXVSCROLL) - 4;
+	if (name_col_width < 50)
+		name_col_width = 50;
+	ListView_SetColumnWidth(hwnd_, COL_NAME, name_col_width);
+}
+
+void blocker_panel::set_font(HFONT font)
+{
+	SendMessage(hwnd_, WM_SETFONT, WPARAM(font), TRUE);
+
+	// Create underlined version for the link
+	if (link_font_)
+		DeleteObject(link_font_);
+
+	LOGFONT lf = {0};
+	GetObject(font, sizeof(lf), &lf);
+	lf.lfUnderline = TRUE;
+	link_font_ = CreateFontIndirect(&lf);
+}
+
+int blocker_panel::extract_icon(const std::wstring &exe_path)
+{
+	HICON hIcon = NULL;
+
+	if (!exe_path.empty()) {
+		SHFILEINFO sfi = {0};
+		if (SHGetFileInfo(exe_path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
+			hIcon = sfi.hIcon;
+		}
+	}
+
+	if (!hIcon) {
+		SHFILEINFO sfi = {0};
+		if (SHGetFileInfo(L".exe", FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES)) {
+			hIcon = sfi.hIcon;
+		}
+	}
+
+	if (hIcon) {
+		int idx = ImageList_AddIcon(image_list_, hIcon);
+		DestroyIcon(hIcon);
+		return idx;
+	}
+	return -1;
+}
+
+void blocker_panel::set_blockers(const std::vector<blocker_info> &blockers)
+{
+	clear();
+	blockers_ = blockers;
+
+	for (int i = 0; i < (int)blockers.size(); i++) {
+		const auto &info = blockers[i];
+
+		int icon_index = extract_icon(info.exe_path);
+
+		LVITEM lvi = {0};
+		lvi.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
+		lvi.iItem = i;
+		lvi.iSubItem = COL_NAME;
+		lvi.pszText = const_cast<LPWSTR>(info.app_name.c_str());
+		lvi.lParam = (LPARAM)info.pid;
+		lvi.iImage = icon_index;
+		ListView_InsertItem(hwnd_, &lvi);
+	}
+}
+
+int blocker_panel::hit_test_popup(LPARAM mouse_lParam)
+{
+	LVHITTESTINFO ht = {0};
+	ht.pt.x = GET_X_LPARAM(mouse_lParam);
+	ht.pt.y = GET_Y_LPARAM(mouse_lParam);
+	ListView_SubItemHitTest(hwnd_, &ht);
+
+	if (ht.iItem >= 0 && ht.iSubItem == COL_POPUP && ht.iItem < (int)blockers_.size() && blockers_[ht.iItem].has_window)
+		return ht.iItem;
+	return -1;
+}
+
+LRESULT blocker_panel::handle_custom_draw(LPNMLVCUSTOMDRAW lvcd)
+{
+	switch (lvcd->nmcd.dwDrawStage) {
+	case CDDS_PREPAINT:
+		return CDRF_NOTIFYITEMDRAW;
+
+	case CDDS_ITEMPREPAINT:
+		lvcd->clrText = RGB(255, 255, 255);
+		lvcd->clrTextBk = bg_color;
+		return CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT;
+
+	case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+		if (lvcd->iSubItem == COL_POPUP) {
+			int item = (int)lvcd->nmcd.dwItemSpec;
+			RECT rc = {0};
+			ListView_GetSubItemRect(hwnd_, item, COL_POPUP, LVIR_BOUNDS, &rc);
+
+			// Fill background
+			HBRUSH bgb = CreateSolidBrush(bg_color);
+			FillRect(lvcd->nmcd.hdc, &rc, bgb);
+			DeleteObject(bgb);
+
+			// Only draw link if process has a visible window
+			if (item < (int)blockers_.size() && blockers_[item].has_window) {
+				HFONT old_font = NULL;
+				if (link_font_)
+					old_font = (HFONT)SelectObject(lvcd->nmcd.hdc, link_font_);
+
+				bool hovered = (item == hover_item_);
+				SetBkMode(lvcd->nmcd.hdc, TRANSPARENT);
+				SetTextColor(lvcd->nmcd.hdc, hovered ? link_hover_color : link_color);
+				DrawTextW(lvcd->nmcd.hdc, L"Bring up", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+				if (old_font)
+					SelectObject(lvcd->nmcd.hdc, old_font);
+			}
+
+			return CDRF_SKIPDEFAULT;
+		}
+		lvcd->clrText = RGB(255, 255, 255);
+		lvcd->clrTextBk = bg_color;
+		return CDRF_NEWFONT;
+	}
+
+	return CDRF_DODEFAULT;
+}
+
+struct enum_wnd_data {
+	DWORD target_pid;
+	HWND result;
+};
+
+static BOOL CALLBACK find_main_window_cb(HWND hwnd, LPARAM lParam)
+{
+	auto *data = reinterpret_cast<enum_wnd_data *>(lParam);
+	DWORD pid = 0;
+	GetWindowThreadProcessId(hwnd, &pid);
+
+	if (pid == data->target_pid && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == NULL) {
+		data->result = hwnd;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+void blocker_panel::bring_to_front(DWORD pid)
+{
+	if (pid == 0)
+		return;
+
+	enum_wnd_data data = {pid, NULL};
+	EnumWindows(find_main_window_cb, (LPARAM)&data);
+
+	if (data.result) {
+		if (IsIconic(data.result)) {
+			ShowWindow(data.result, SW_RESTORE);
+		}
+		SetForegroundWindow(data.result);
+	}
+}
+
+bool blocker_panel::handle_click(LPARAM lParam)
+{
+	LPNMITEMACTIVATE pnm = (LPNMITEMACTIVATE)lParam;
+	if (!pnm || pnm->hdr.hwndFrom != hwnd_)
+		return false;
+
+	if (pnm->iSubItem == COL_POPUP && pnm->iItem >= 0) {
+		LVITEM lvi = {0};
+		lvi.mask = LVIF_PARAM;
+		lvi.iItem = pnm->iItem;
+		if (ListView_GetItem(hwnd_, &lvi)) {
+			DWORD pid = (DWORD)lvi.lParam;
+			bring_to_front(pid);
+			return true;
+		}
+	}
+	return false;
+}
+
+LRESULT CALLBACK blocker_panel::subclass_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+	auto *self = reinterpret_cast<blocker_panel *>(dwRefData);
+
+	switch (msg) {
+	case WM_MOUSEMOVE: {
+		int item = self->hit_test_popup(lParam);
+		if (item != self->hover_item_) {
+			int old_hover = self->hover_item_;
+			self->hover_item_ = item;
+			// Redraw affected rows
+			if (old_hover >= 0)
+				ListView_RedrawItems(hwnd, old_hover, old_hover);
+			if (item >= 0)
+				ListView_RedrawItems(hwnd, item, item);
+			UpdateWindow(hwnd);
+		}
+
+		// Request WM_MOUSELEAVE
+		TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
+		TrackMouseEvent(&tme);
+	} break;
+
+	case WM_MOUSELEAVE: {
+		if (self->hover_item_ >= 0) {
+			int old = self->hover_item_;
+			self->hover_item_ = -1;
+			ListView_RedrawItems(hwnd, old, old);
+			UpdateWindow(hwnd);
+		}
+	} break;
+
+	case WM_SETCURSOR: {
+		if (LOWORD(lParam) == HTCLIENT && self->hover_item_ >= 0) {
+			SetCursor(self->hand_cursor_);
+			return TRUE;
+		}
+	} break;
+	}
+
+	return DefSubclassProc(hwnd, msg, wParam, lParam);
+}

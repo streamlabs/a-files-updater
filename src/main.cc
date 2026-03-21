@@ -13,6 +13,7 @@
 #include "crash-reporter.hpp"
 #include "utils.hpp"
 #include "text-panel.hpp"
+#include "blocker-panel.hpp"
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -108,6 +109,7 @@ struct callbacks_impl : public install_callbacks,
 	HWND progress_worker{NULL};
 	HWND progress_label{NULL};
 	std::unique_ptr<text_panel> text_panel_;
+	std::unique_ptr<blocker_panel> blocker_panel_;
 	content_panel *active_panel{nullptr};
 	HWND kill_button{NULL};
 	HWND continue_button{NULL};
@@ -180,7 +182,7 @@ struct callbacks_impl : public install_callbacks,
 	void pid_wait_complete() final {}
 
 	void blocker_start(bool is_virtualcam_phase) final;
-	int blocker_waiting_for(const std::wstring &processes_list, bool list_changed) final;
+	int blocker_waiting_for(const std::vector<blocker_info> &blockers, bool list_changed) final;
 	void blocker_wait_complete() final;
 
 	void disk_space_check_start() final;
@@ -314,6 +316,12 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		do_fail(getDefaultErrorMessage(), L"text_panel creation");
 	}
 
+	blocker_panel_ = std::make_unique<blocker_panel>(frame, x_pos, y_pos, x_size, ui_basic_height * 4);
+
+	if (!blocker_panel_->hwnd()) {
+		do_fail(getDefaultErrorMessage(), L"blocker_panel creation");
+	}
+
 	kill_button = CreateWindow(WC_BUTTON, stop_all_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW, x_size + ui_padding - 100,
 				   rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL, NULL);
 
@@ -369,6 +377,7 @@ void callbacks_impl::setupFont()
 	SendMessage(continue_button, WM_SETFONT, WPARAM(main_font), TRUE);
 	SendMessage(cancel_button, WM_SETFONT, WPARAM(main_font), TRUE);
 	text_panel_->set_font(main_font);
+	blocker_panel_->set_font(main_font);
 }
 
 void callbacks_impl::repostionUI()
@@ -746,14 +755,12 @@ void callbacks_impl::blocker_start(bool is_virtualcam_phase)
 
 	progress_label_rect.right -= progress_label_rect.left;
 
-	std::wstring processes_list = L"C: \r\nD: \r\nE: \r\nF: \r\nG: \r\nI: ";
-	text_panel_->set_text(processes_list.c_str());
-	text_panel_->measure(hdc, progress_label_rect.right);
+	blocker_panel_->measure(hdc, progress_label_rect.right);
 
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
 
-	active_panel = text_panel_.get();
+	active_panel = blocker_panel_.get();
 	active_panel->show();
 	ShowWindow(kill_button, SW_SHOW);
 	ShowWindow(cancel_button, SW_SHOW);
@@ -764,7 +771,7 @@ void callbacks_impl::blocker_start(bool is_virtualcam_phase)
 	active_panel->clear();
 }
 
-int callbacks_impl::blocker_waiting_for(const std::wstring &processes_list, bool list_changed)
+int callbacks_impl::blocker_waiting_for(const std::vector<blocker_info> &blockers, bool list_changed)
 {
 	int ret = 0;
 	if (should_cancel) {
@@ -774,8 +781,16 @@ int callbacks_impl::blocker_waiting_for(const std::wstring &processes_list, bool
 		should_kill_blockers = false;
 		ret = 1;
 	} else {
-		if (list_changed && active_panel) {
-			active_panel->set_text(processes_list.c_str());
+		if (list_changed && blocker_panel_) {
+			blocker_panel_->set_blockers(blockers);
+
+			HDC hdc = GetDC(frame);
+			HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
+			blocker_panel_->measure(hdc, progress_label_rect.right > ui_min_width ? progress_label_rect.right : ui_min_width);
+			SelectObject(hdc, hfontOld);
+			ReleaseDC(frame, hdc);
+
+			repostionUI();
 		}
 	}
 	return ret;
@@ -1344,6 +1359,19 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		}
 		if (dis->hwndItem == ctx->kill_button) {
 			DrawText(dis->hDC, ctx->stop_all_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		}
+	} break;
+	case WM_NOTIFY: {
+		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
+		LPNMHDR pnmh = (LPNMHDR)lParam;
+
+		if (ctx->blocker_panel_ && pnmh->hwndFrom == ctx->blocker_panel_->hwnd()) {
+			if (pnmh->code == NM_CLICK) {
+				ctx->blocker_panel_->handle_click(lParam);
+			} else if (pnmh->code == NM_CUSTOMDRAW) {
+				return ctx->blocker_panel_->handle_custom_draw((LPNMLVCUSTOMDRAW)lParam);
+			}
 		}
 	} break;
 	}

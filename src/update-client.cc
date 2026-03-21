@@ -760,13 +760,14 @@ void update_client::process_manifest_results()
 
 		// Phase 1: Virtual camera blockers
 		if (current_blocker_phase == blocker_phase::virtualcam && vcam_only_blockers.list.size() > 0) {
+			auto blocker_details = get_blocker_details(vcam_only_blockers);
+
 			std::wstring new_process_list_text;
-			for (auto it = vcam_only_blockers.list.begin(); it != vcam_only_blockers.list.end(); it++) {
-				new_process_list_text += (*it).second.strAppName;
+			for (auto &info : blocker_details) {
+				new_process_list_text += info.app_name;
 				new_process_list_text += L" (";
-				new_process_list_text += std::to_wstring((*it).second.Process.dwProcessId);
-				new_process_list_text += L")";
-				new_process_list_text += L"\r\n";
+				new_process_list_text += std::to_wstring(info.pid);
+				new_process_list_text += L")\r\n";
 			}
 
 			if (show_user_blockers_list) {
@@ -777,7 +778,7 @@ void update_client::process_manifest_results()
 			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
 
 			process_list_text = new_process_list_text;
-			int command = this->blocker_events->blocker_waiting_for(process_list_text, list_changed);
+			int command = this->blocker_events->blocker_waiting_for(blocker_details, list_changed);
 
 			switch (command) {
 			case 1:
@@ -823,13 +824,14 @@ void update_client::process_manifest_results()
 
 		// Phase 2: Generic blockers
 		if (blockers.list.size() > 0) {
+			auto blocker_details = get_blocker_details(blockers);
+
 			std::wstring new_process_list_text;
-			for (auto it = blockers.list.begin(); it != blockers.list.end(); it++) {
-				new_process_list_text += (*it).second.strAppName;
+			for (auto &info : blocker_details) {
+				new_process_list_text += info.app_name;
 				new_process_list_text += L" (";
-				new_process_list_text += std::to_wstring((*it).second.Process.dwProcessId);
-				new_process_list_text += L")";
-				new_process_list_text += L"\r\n";
+				new_process_list_text += std::to_wstring(info.pid);
+				new_process_list_text += L")\r\n";
 			}
 
 			if (show_user_blockers_list) {
@@ -840,7 +842,7 @@ void update_client::process_manifest_results()
 			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
 
 			process_list_text = new_process_list_text;
-			int command = this->blocker_events->blocker_waiting_for(process_list_text, list_changed);
+			int command = this->blocker_events->blocker_waiting_for(blocker_details, list_changed);
 
 			switch (command) {
 			case 1:

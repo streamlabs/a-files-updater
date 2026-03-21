@@ -1,6 +1,7 @@
 #pragma once
 
 #include "update-parameters.hpp"
+#include "update-blockers.hpp"
 
 struct client_callbacks {
 	virtual void initialize(struct update_client *client) = 0;
@@ -73,7 +74,7 @@ struct pid_callbacks {
 
 struct blocker_callbacks {
 	virtual void blocker_start(bool is_virtualcam_phase) = 0;
-	virtual int blocker_waiting_for(const std::wstring &processes_list, bool list_changed) = 0;
+	virtual int blocker_waiting_for(const std::vector<blocker_info> &blockers, bool list_changed) = 0;
 	virtual void blocker_wait_complete() = 0;
 };
 

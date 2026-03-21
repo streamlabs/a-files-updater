@@ -112,6 +112,61 @@ bool get_blockers_names(blockers_map_t &blockers)
 	return ret;
 }
 
+struct find_window_data {
+	DWORD pid;
+	bool found;
+};
+
+static BOOL CALLBACK find_visible_window_cb(HWND hwnd, LPARAM lParam)
+{
+	auto *data = reinterpret_cast<find_window_data *>(lParam);
+	DWORD pid = 0;
+	GetWindowThreadProcessId(hwnd, &pid);
+
+	if (pid == data->pid && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == NULL) {
+		data->found = true;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers)
+{
+	std::vector<blocker_info> result;
+	std::unique_lock<std::mutex> ulock(blockers.mtx);
+
+	for (auto &entry : blockers.list) {
+		blocker_info info;
+		info.pid = entry.first;
+		info.app_name = entry.second.strAppName;
+		info.has_window = false;
+
+		if (info.pid != 0) {
+			HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, info.pid);
+			if (hProcess) {
+				FILETIME ftCreate, ftExit, ftKernel, ftUser;
+				if (GetProcessTimes(hProcess, &ftCreate, &ftExit, &ftKernel, &ftUser) &&
+				    CompareFileTime(&entry.second.Process.ProcessStartTime, &ftCreate) == 0) {
+					WCHAR sz[MAX_PATH];
+					DWORD cch = MAX_PATH;
+					if (QueryFullProcessImageNameW(hProcess, 0, sz, &cch) && cch <= MAX_PATH) {
+						info.exe_path = sz;
+					}
+				}
+				CloseHandle(hProcess);
+			}
+
+			find_window_data fwd = {info.pid, false};
+			EnumWindows(find_visible_window_cb, (LPARAM)&fwd);
+			info.has_window = fwd.found;
+		}
+
+		result.push_back(std::move(info));
+	}
+
+	return result;
+}
+
 bool check_file_updatable(fs::path &check_path, bool check_read, blockers_map_t &blockers)
 {
 	bool ret = true;

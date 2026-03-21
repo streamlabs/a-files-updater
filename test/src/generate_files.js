@@ -351,6 +351,16 @@ async function generate_initial_dir(testinfo, update_subdirpath = "") {
       self_locked_file_handles.push(fd);
       if (testinfo.more_log_output)
         console.log("Locked virtualcam DLL: " + vcamPath);
+
+      // Auto-release after 15 seconds so the updater can proceed
+      setTimeout(() => {
+        try {
+          fs.closeSync(fd);
+          const idx = self_locked_file_handles.indexOf(fd);
+          if (idx !== -1) self_locked_file_handles.splice(idx, 1);
+          console.log("Auto-released virtualcam DLL lock after 15s");
+        } catch (e) {}
+      }, 15000);
     }
   }
 
