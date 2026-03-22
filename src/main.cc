@@ -146,6 +146,8 @@ struct callbacks_impl : public install_callbacks,
 	bool notify_restart{false};
 	bool finished_downloading{false};
 	bool prompting{false};
+	int cancel_countdown{0};
+	bool cancel_silent{false};
 	LPCWSTR label_format{L"Downloading {} of {} - {:.2f} MB/s"};
 
 	callbacks_impl(const callbacks_impl &) = delete;
@@ -217,6 +219,9 @@ private:
 	bool run_message_loop(bool default_accept);
 	std::wstring format_update_details(const std::string &detailsStr);
 	static void CALLBACK auto_accept_timer(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+
+public:
+	static void CALLBACK cancel_countdown_timer(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 };
 
 callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
@@ -798,6 +803,11 @@ int callbacks_impl::blocker_waiting_for(const std::vector<blocker_info> &blocker
 
 void callbacks_impl::blocker_wait_complete()
 {
+	if (cancel_countdown > 0) {
+		KillTimer(frame, 3);
+		cancel_countdown = 0;
+		cancel_silent = false;
+	}
 	if (active_panel) {
 		active_panel->hide();
 		active_panel->clear();
@@ -1018,6 +1028,27 @@ void CALLBACK callbacks_impl::auto_accept_timer(HWND hwnd, UINT uMsg, UINT_PTR i
 	}
 
 	KillTimer(hwnd, idEvent);
+}
+
+void CALLBACK callbacks_impl::cancel_countdown_timer(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
+{
+	LONG_PTR data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+	auto ctx = reinterpret_cast<callbacks_impl *>(data);
+	if (!ctx) {
+		KillTimer(hwnd, idEvent);
+		return;
+	}
+
+	ctx->cancel_countdown--;
+
+	if (ctx->cancel_countdown <= 0) {
+		KillTimer(hwnd, idEvent);
+		ctx->should_cancel = true;
+	} else {
+		std::wstring label = L"Canceling " + std::to_wstring(ctx->cancel_countdown) + L"...";
+		SetWindowTextW(ctx->cancel_button, label.c_str());
+		RedrawWindow(ctx->cancel_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+	}
 }
 
 bool callbacks_impl::show_dialog(const DialogState &state)
@@ -1264,8 +1295,11 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
 		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
 
-		ShowError(ctx->error_buf);
+		if (!ctx->cancel_silent) {
+			ShowError(ctx->error_buf);
+		}
 		ctx->error_buf = "";
+		ctx->cancel_silent = false;
 
 		DestroyWindow(hwnd);
 
@@ -1286,12 +1320,18 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			break;
 		}
 		if ((HWND)lParam == ctx->cancel_button) {
+			if (ctx->cancel_countdown > 0) {
+				// Already counting down, ignore
+				break;
+			}
 			EnableWindow(ctx->kill_button, false);
 			EnableWindow(ctx->continue_button, false);
 			EnableWindow(ctx->cancel_button, false);
-			ctx->should_kill_blockers = false;
-			ctx->should_continue = false;
-			ctx->should_cancel = true;
+			ctx->cancel_countdown = 3;
+			ctx->cancel_silent = true;
+			SetWindowTextW(ctx->cancel_button, L"Canceling 3...");
+			RedrawWindow(ctx->cancel_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+			SetTimer(hwnd, 3, 1000, &callbacks_impl::cancel_countdown_timer);
 			break;
 		}
 	} break;
@@ -1350,9 +1390,11 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			}
 		}
 		if (dis->hwndItem == ctx->cancel_button) {
-			if (ctx->prompting) {
+			if (ctx->cancel_countdown > 0) {
+				std::wstring label = L"Canceling " + std::to_wstring(ctx->cancel_countdown) + L"...";
+				DrawText(dis->hDC, label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			} else if (ctx->prompting) {
 				DrawText(dis->hDC, ctx->remind_btn_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
 			} else {
 				DrawText(dis->hDC, ctx->cancel_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			}
