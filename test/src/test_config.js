@@ -27,6 +27,7 @@ exports.gettestinfo = function (testname) {
 
     selfBlockingFile: false,
     selfLockingFile: false,
+    selfVirtualCamBlocking: false,
     selfBlockersCount: 1,
 
     pidWaiting: false,
@@ -110,6 +111,7 @@ exports.gettestinfo = function (testname) {
     { name: "file5.1", hugefile: false, testing: "created" },
     { name: "file 1.txt", hugefile: false, testing: "created" },
     { name: "dir/file6.ept", hugefile: false, testing: "created empty" },
+    { name: "data/obs-plugins/64bit/obs-virtualcam-module64.dll", hugefile: false, testing: "changed content" },
   ];
 
   console.log("Test created: " + newinfo.testName);

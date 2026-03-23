@@ -105,6 +105,9 @@ struct update_client {
 	bool show_user_blockers_list;
 	std::wstring process_list_text;
 
+	enum class blocker_phase { virtualcam, generic };
+	blocker_phase current_blocker_phase{blocker_phase::virtualcam};
+
 	bool update_download_aborted = false;
 	std::string download_abort_message;
 	boost::system::error_code download_abort_error;
@@ -129,8 +132,8 @@ public:
 	void handle_resolve(const boost::system::error_code &error, resolver_type::results_type results);
 	void handle_manifest_result(manifest_request<manifest_body> *request_ctx);
 	void process_manifest_results();
-	void checkup_files(struct blockers_map_t &blockers, int from, int to);
-	void checkup_manifest(struct blockers_map_t &blockers);
+	void checkup_files(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers, int from, int to);
+	void checkup_manifest(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers);
 
 	//files
 	void start_downloading_files();

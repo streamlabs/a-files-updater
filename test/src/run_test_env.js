@@ -8,6 +8,7 @@ async function run_tests() {
     testinfo.more_log_output = true;
     //testinfo.morebigfiles = true;
     //testinfo.selfLockingFile = true;
+    //testinfo.selfVirtualCamBlocking = true;
     //testinfo.selfBlockersCount = 2;
     testinfo.skipUpdaterLaunch = true;
     //testinfo.manifestGenerated = true;

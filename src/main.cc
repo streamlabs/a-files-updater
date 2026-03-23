@@ -12,7 +12,10 @@
 #include "logger/log.h"
 #include "crash-reporter.hpp"
 #include "utils.hpp"
+#include "text-panel.hpp"
+#include "blocker-panel.hpp"
 #include <atomic>
+#include <memory>
 #include <thread>
 #include <fstream>
 
@@ -87,7 +90,6 @@ struct bandwidth_chunk {
 static LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 static LRESULT CALLBACK ProgressLabelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
-static LRESULT CALLBACK BlockersListWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
 
 static BOOL HasInstalled_VC_redistx64();
 
@@ -106,7 +108,9 @@ struct callbacks_impl : public install_callbacks,
 	HWND frame{NULL}; /* Toplevel window */
 	HWND progress_worker{NULL};
 	HWND progress_label{NULL};
-	HWND blockers_list{NULL};
+	std::unique_ptr<text_panel> text_panel_;
+	std::unique_ptr<blocker_panel> blocker_panel_;
+	content_panel *active_panel{nullptr};
 	HWND kill_button{NULL};
 	HWND continue_button{NULL};
 	HWND cancel_button{NULL};
@@ -123,7 +127,6 @@ struct callbacks_impl : public install_callbacks,
 
 	HFONT main_font{NULL};
 	RECT progress_label_rect{0};
-	RECT blockers_list_rect{0};
 
 	std::atomic_uint files_done{0};
 	std::vector<size_t> file_sizes{0};
@@ -143,6 +146,7 @@ struct callbacks_impl : public install_callbacks,
 	bool notify_restart{false};
 	bool finished_downloading{false};
 	bool prompting{false};
+	bool cancel_silent{false};
 	LPCWSTR label_format{L"Downloading {} of {} - {:.2f} MB/s"};
 
 	callbacks_impl(const callbacks_impl &) = delete;
@@ -178,8 +182,8 @@ struct callbacks_impl : public install_callbacks,
 	void pid_wait_finished(uint64_t pid) final {}
 	void pid_wait_complete() final {}
 
-	void blocker_start() final;
-	int blocker_waiting_for(const std::wstring &processes_list, bool list_changed) final;
+	void blocker_start(bool is_virtualcam_phase) final;
+	int blocker_waiting_for(const std::vector<blocker_info> &blockers, bool list_changed) final;
 	void blocker_wait_complete() final;
 
 	void disk_space_check_start() final;
@@ -207,7 +211,7 @@ private:
 	};
 
 	bool show_dialog(const DialogState &state);
-	void calculate_text_dimensions(const std::wstring &title, const std::wstring &content, RECT &title_rect, RECT &content_rect);
+	void calculate_text_dimensions(const std::wstring &title, RECT &title_rect);
 	void show_ui_elements(bool show_buttons = true, bool show_kill = false);
 	void hide_ui_elements();
 	void reset_ui_labels();
@@ -307,14 +311,16 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		do_fail(getDefaultErrorMessage(), L"SetWindowSubclass");
 	}
 
-	blockers_list = CreateWindow(WC_EDIT, blockers_list_label.c_str(),
-				     WS_CHILD | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | WS_BORDER | ES_READONLY, x_pos, y_pos,
-				     x_size, ui_basic_height * 2, frame, NULL, NULL, NULL);
+	text_panel_ = std::make_unique<text_panel>(frame, x_pos, y_pos, x_size, ui_basic_height * 2, blockers_list_label.c_str());
 
-	success = SetWindowSubclass(blockers_list, BlockersListWndProc, CLS_BLOCKERS_LIST, (DWORD_PTR)this);
+	if (!text_panel_->hwnd()) {
+		do_fail(getDefaultErrorMessage(), L"text_panel creation");
+	}
 
-	if (!success) {
-		do_fail(getDefaultErrorMessage(), L"SetWindowSubclass");
+	blocker_panel_ = std::make_unique<blocker_panel>(frame, x_pos, y_pos, x_size, ui_basic_height * 4);
+
+	if (!blocker_panel_->hwnd()) {
+		do_fail(getDefaultErrorMessage(), L"blocker_panel creation");
 	}
 
 	kill_button = CreateWindow(WC_BUTTON, stop_all_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW, x_size + ui_padding - 100,
@@ -371,7 +377,8 @@ void callbacks_impl::setupFont()
 	SendMessage(kill_button, WM_SETFONT, WPARAM(main_font), TRUE);
 	SendMessage(continue_button, WM_SETFONT, WPARAM(main_font), TRUE);
 	SendMessage(cancel_button, WM_SETFONT, WPARAM(main_font), TRUE);
-	SendMessage(blockers_list, WM_SETFONT, WPARAM(main_font), TRUE);
+	text_panel_->set_font(main_font);
+	blocker_panel_->set_font(main_font);
 }
 
 void callbacks_impl::repostionUI()
@@ -387,17 +394,18 @@ void callbacks_impl::repostionUI()
 	int frame_w = main_w + ui_padding * 2;
 	frame_h += progress_label_rect.bottom + ui_padding;
 
-	if (IsWindowVisible(blockers_list)) {
-		//if blockers_list has so much text that it exceeds screen height, readjust so it's not more than 75% of screen height
-		if ((frame_h + blockers_list_rect.bottom) > screen_height) {
-			blockers_list_rect.bottom -= ((frame_h + blockers_list_rect.bottom) - static_cast<int>(ceil(screen_height * 0.75)));
+	if (active_panel && active_panel->is_visible()) {
+		RECT panel_rect = active_panel->desired_rect();
+		//if panel has so much text that it exceeds screen height, readjust so it's not more than 75% of screen height
+		if ((frame_h + panel_rect.bottom) > screen_height) {
+			panel_rect.bottom -= ((frame_h + panel_rect.bottom) - static_cast<int>(ceil(screen_height * 0.75)));
 		}
 		//if right is larger than 75% width (75% to make it look better than using full size), add some height so aren't scrolling 1 line at a time
-		if (blockers_list_rect.right > (main_w * .75)) {
-			blockers_list_rect.bottom += ui_padding * 5;
+		if (panel_rect.right > (main_w * .75)) {
+			panel_rect.bottom += ui_padding * 5;
 		}
-		SetWindowPos(blockers_list, 0, ui_padding, frame_h, main_w, blockers_list_rect.bottom, SWP_ASYNCWINDOWPOS);
-		frame_h += blockers_list_rect.bottom + ui_padding;
+		active_panel->set_position(ui_padding, frame_h, main_w, panel_rect.bottom);
+		frame_h += panel_rect.bottom + ui_padding;
 	}
 
 	if (IsWindowVisible(progress_worker)) {
@@ -531,7 +539,10 @@ void callbacks_impl::downloader_preparing(bool connected)
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
 
-	ShowWindow(ctx->blockers_list, SW_HIDE);
+	if (ctx->active_panel) {
+		ctx->active_panel->hide();
+		ctx->active_panel = nullptr;
+	}
 	ShowWindow(ctx->progress_label, SW_SHOW);
 	ShowWindow(ctx->progress_worker, SW_SHOW);
 
@@ -629,10 +640,6 @@ void callbacks_impl::installer_download_start(const std::string &packageName)
 
 	progress_label_rect.right -= progress_label_rect.left;
 
-	std::wstring processes_list = L"C: \r\nD: \r\nE: \r\nF: \r\nG: \r\nI: ";
-	blockers_list_rect = {0};
-	DrawText(hdc, processes_list.c_str(), -1, &blockers_list_rect, DT_CALCRECT | DT_NOCLIP);
-
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
 
@@ -727,12 +734,19 @@ void callbacks_impl::downloader_complete(const bool success)
 	finished_downloading = success;
 }
 
-void callbacks_impl::blocker_start()
+void callbacks_impl::blocker_start(bool is_virtualcam_phase)
 {
 	ShowWindow(progress_worker, SW_HIDE);
 
-	std::wstring blocking_app_label =
-		ConvertToUtf16WS(boost::locale::translate("The following programs are preventing Streamlabs Desktop from updating :"));
+	std::wstring blocking_app_label;
+	if (is_virtualcam_phase) {
+		blocking_app_label = ConvertToUtf16WS(boost::locale::translate(
+			"These apps are currently using our virtual webcam driver, which prevents updating.\n"
+			"Please close them until the update is finished:"));
+	} else {
+		blocking_app_label =
+			ConvertToUtf16WS(boost::locale::translate("Please close these apps until the update is finished:"));
+	}
 
 	HDC hdc = GetDC(frame);
 	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
@@ -742,24 +756,23 @@ void callbacks_impl::blocker_start()
 
 	progress_label_rect.right -= progress_label_rect.left;
 
-	std::wstring processes_list = L"C: \r\nD: \r\nE: \r\nF: \r\nG: \r\nI: ";
-	blockers_list_rect = {0};
-	DrawText(hdc, processes_list.c_str(), -1, &blockers_list_rect, DT_CALCRECT | DT_NOCLIP);
+	blocker_panel_->measure(hdc, progress_label_rect.right);
 
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
 
-	ShowWindow(blockers_list, SW_SHOW);
+	active_panel = blocker_panel_.get();
+	active_panel->show();
 	ShowWindow(kill_button, SW_SHOW);
 	ShowWindow(cancel_button, SW_SHOW);
 
 	repostionUI();
 
 	SetWindowTextW(progress_label, blocking_app_label.c_str());
-	SetWindowTextW(blockers_list, L"");
+	active_panel->clear();
 }
 
-int callbacks_impl::blocker_waiting_for(const std::wstring &processes_list, bool list_changed)
+int callbacks_impl::blocker_waiting_for(const std::vector<blocker_info> &blockers, bool list_changed)
 {
 	int ret = 0;
 	if (should_cancel) {
@@ -769,8 +782,16 @@ int callbacks_impl::blocker_waiting_for(const std::wstring &processes_list, bool
 		should_kill_blockers = false;
 		ret = 1;
 	} else {
-		if (list_changed) {
-			SetWindowTextW(blockers_list, processes_list.c_str());
+		if (list_changed && blocker_panel_) {
+			blocker_panel_->set_blockers(blockers);
+
+			HDC hdc = GetDC(frame);
+			HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
+			blocker_panel_->measure(hdc, progress_label_rect.right > ui_min_width ? progress_label_rect.right : ui_min_width);
+			SelectObject(hdc, hfontOld);
+			ReleaseDC(frame, hdc);
+
+			repostionUI();
 		}
 	}
 	return ret;
@@ -778,10 +799,13 @@ int callbacks_impl::blocker_waiting_for(const std::wstring &processes_list, bool
 
 void callbacks_impl::blocker_wait_complete()
 {
-	ShowWindow(blockers_list, SW_HIDE);
+	if (active_panel) {
+		active_panel->hide();
+		active_panel->clear();
+		active_panel = nullptr;
+	}
 	ShowWindow(kill_button, SW_HIDE);
 	ShowWindow(cancel_button, SW_HIDE);
-	SetWindowTextW(blockers_list, L"");
 	SetWindowTextW(progress_label, L"");
 
 	ShowWindow(progress_worker, SW_SHOW);
@@ -804,13 +828,14 @@ void callbacks_impl::disk_space_check_start()
 	progress_label_rect.right -= progress_label_rect.left;
 
 	std::wstring processes_list = L"C: 100Mb\nD: 100Mb\nE: 100Mb";
-	blockers_list_rect = {0};
-	DrawText(hdc, processes_list.c_str(), -1, &blockers_list_rect, DT_CALCRECT | DT_NOCLIP);
+	text_panel_->set_text(processes_list.c_str());
+	text_panel_->measure(hdc, progress_label_rect.right);
 
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
 
-	ShowWindow(blockers_list, SW_SHOW);
+	active_panel = text_panel_.get();
+	active_panel->show();
 	ShowWindow(continue_button, SW_SHOW);
 	ShowWindow(cancel_button, SW_SHOW);
 
@@ -845,17 +870,21 @@ int callbacks_impl::disk_space_waiting_for(const std::wstring &app_dir, size_t a
 		} else {
 			processes_list << L"" << app_disk_name << L" " << app_dir_free_space / 1024.0 / 1024.0 << L" Mb free";
 		}
-		SetWindowTextW(blockers_list, processes_list.str().c_str());
+		if (active_panel)
+			active_panel->set_text(processes_list.str().c_str());
 	}
 	return ret;
 }
 
 void callbacks_impl::disk_space_wait_complete()
 {
-	ShowWindow(blockers_list, SW_HIDE);
+	if (active_panel) {
+		active_panel->hide();
+		active_panel->clear();
+		active_panel = nullptr;
+	}
 	ShowWindow(continue_button, SW_HIDE);
 	ShowWindow(cancel_button, SW_HIDE);
-	SetWindowTextW(blockers_list, L"");
 	SetWindowTextW(progress_label, L"");
 }
 
@@ -879,7 +908,7 @@ void callbacks_impl::updater_start()
 	SetWindowTextW(progress_label, copying_label.c_str());
 }
 
-void callbacks_impl::calculate_text_dimensions(const std::wstring &title, const std::wstring &content, RECT &title_rect, RECT &content_rect)
+void callbacks_impl::calculate_text_dimensions(const std::wstring &title, RECT &title_rect)
 {
 	RECT rcClient{};
 	GetClientRect(frame, &rcClient);
@@ -895,15 +924,10 @@ void callbacks_impl::calculate_text_dimensions(const std::wstring &title, const 
 	DrawTextW(hdc, title.c_str(), -1, &title_rect, DT_CALCRECT | DT_NOCLIP);
 	title_rect.right -= title_rect.left;
 
-	RECT rcCalc = {0, 0, calc_w, 0};
-	DrawTextW(hdc, content.c_str(), -1, &rcCalc, DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL);
-
-	content_rect = {0};
-	content_rect.right = calc_w;
-	content_rect.bottom = rcCalc.bottom - rcCalc.top;
-
 	if (title_rect.right < calc_w)
 		title_rect.right = calc_w;
+
+	text_panel_->measure(hdc, calc_w);
 
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
@@ -913,7 +937,8 @@ void callbacks_impl::show_ui_elements(bool show_buttons, bool show_kill)
 {
 	ShowWindow(frame, SW_SHOWNORMAL);
 	ShowWindow(progress_worker, SW_HIDE);
-	ShowWindow(blockers_list, SW_SHOW);
+	active_panel = text_panel_.get();
+	active_panel->show();
 
 	if (show_buttons) {
 		ShowWindow(continue_button, SW_SHOW);
@@ -934,12 +959,15 @@ void callbacks_impl::show_ui_elements(bool show_buttons, bool show_kill)
 void callbacks_impl::hide_ui_elements()
 {
 	ShowWindow(frame, SW_HIDE);
-	ShowWindow(blockers_list, SW_HIDE);
+	if (active_panel) {
+		active_panel->hide();
+		active_panel->clear();
+		active_panel = nullptr;
+	}
 	ShowWindow(continue_button, SW_HIDE);
 	ShowWindow(cancel_button, SW_HIDE);
 	ShowWindow(kill_button, SW_HIDE);
 
-	SetWindowTextW(blockers_list, L"");
 	SetWindowTextW(progress_label, L"");
 }
 
@@ -993,6 +1021,7 @@ void CALLBACK callbacks_impl::auto_accept_timer(HWND hwnd, UINT uMsg, UINT_PTR i
 	KillTimer(hwnd, idEvent);
 }
 
+
 bool callbacks_impl::show_dialog(const DialogState &state)
 {
 	should_cancel = false;
@@ -1013,14 +1042,13 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 		SetTimer(frame, 2, 30000, &auto_accept_timer);
 	}
 
-	calculate_text_dimensions(state.title, state.content, progress_label_rect, blockers_list_rect);
+	text_panel_->set_text(state.content.c_str());
+	calculate_text_dimensions(state.title, progress_label_rect);
 	show_ui_elements(true, false);
 
 	repostionUI();
 
 	SetWindowTextW(progress_label, state.title.c_str());
-	SetWindowTextW(blockers_list, state.content.c_str());
-	SendMessageW(blockers_list, EM_SETSEL, 0, 0);
 
 	SetWindowTextW(continue_button, state.accept_label.c_str());
 	SetWindowTextW(cancel_button, state.decline_label.c_str());
@@ -1222,29 +1250,6 @@ LRESULT CALLBACK ProgressLabelWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 	return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
-LRESULT CALLBACK BlockersListWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
-{
-	switch (msg) {
-	case WM_PAINT: {
-		//redraw on scroll so text doesn't overwrite itself - parent is now WS_CLIPCHILDREN so have to manually invalidate
-		InvalidateRect(hwnd, NULL, true);
-	} break;
-	case WM_HSCROLL:
-	case WM_VSCROLL:
-	case WM_SETTEXT: {
-		RECT rect;
-		HWND parent = GetParent(hwnd);
-
-		GetWindowRect(hwnd, &rect);
-		MapWindowPoints(HWND_DESKTOP, parent, (LPPOINT)&rect, 2);
-
-		RedrawWindow(parent, &rect, NULL, RDW_ERASE | RDW_INVALIDATE);
-	} break;
-	}
-
-	return DefSubclassProc(hwnd, msg, wParam, lParam);
-}
-
 LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	switch (msg) {
@@ -1261,8 +1266,11 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
 		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
 
-		ShowError(ctx->error_buf);
+		if (!ctx->cancel_silent) {
+			ShowError(ctx->error_buf);
+		}
 		ctx->error_buf = "";
+		ctx->cancel_silent = false;
 
 		DestroyWindow(hwnd);
 
@@ -1286,8 +1294,7 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			EnableWindow(ctx->kill_button, false);
 			EnableWindow(ctx->continue_button, false);
 			EnableWindow(ctx->cancel_button, false);
-			ctx->should_kill_blockers = false;
-			ctx->should_continue = false;
+			ctx->cancel_silent = true;
 			ctx->should_cancel = true;
 			break;
 		}
@@ -1301,7 +1308,7 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			SetTextColor((HDC)wParam, kev_color);
 			SetBkColor((HDC)wParam, dlg_bg_color);
 			return (LRESULT)ctx->dlg_bg_brush;
-		} else if ((HWND)lParam == ctx->blockers_list) {
+		} else if (ctx->text_panel_ && (HWND)lParam == ctx->text_panel_->hwnd()) {
 			SetBkColor((HDC)wParam, edit_bg_color);
 			SetTextColor((HDC)wParam, white_color);
 			return (LRESULT)ctx->edit_bg_brush;
@@ -1349,13 +1356,25 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		if (dis->hwndItem == ctx->cancel_button) {
 			if (ctx->prompting) {
 				DrawText(dis->hDC, ctx->remind_btn_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
 			} else {
 				DrawText(dis->hDC, ctx->cancel_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			}
 		}
 		if (dis->hwndItem == ctx->kill_button) {
 			DrawText(dis->hDC, ctx->stop_all_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		}
+	} break;
+	case WM_NOTIFY: {
+		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
+		LPNMHDR pnmh = (LPNMHDR)lParam;
+
+		if (ctx->blocker_panel_ && pnmh->hwndFrom == ctx->blocker_panel_->hwnd()) {
+			if (pnmh->code == NM_CLICK) {
+				ctx->blocker_panel_->handle_click(lParam);
+			} else if (pnmh->code == NM_CUSTOMDRAW) {
+				return ctx->blocker_panel_->handle_custom_draw((LPNMLVCUSTOMDRAW)lParam);
+			}
 		}
 	} break;
 	}
