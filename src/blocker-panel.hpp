@@ -2,11 +2,12 @@
 
 #include "content-panel.hpp"
 #include "update-blockers.hpp"
+#include "utils.hpp"
 #include <commctrl.h>
 #include <vector>
 
 struct blocker_panel : public content_panel {
-	blocker_panel(HWND parent, int x, int y, int w, int h);
+	blocker_panel(HWND parent, int x, int y, int w, int h, UINT dpi = USER_DEFAULT_SCREEN_DPI);
 	~blocker_panel() override;
 
 	blocker_panel(const blocker_panel &) = delete;
@@ -35,6 +36,8 @@ struct blocker_panel : public content_panel {
 
 	LRESULT handle_custom_draw(LPNMLVCUSTOMDRAW lvcd);
 
+	void update_dpi(UINT dpi);
+
 private:
 	HWND hwnd_{NULL};
 	RECT rect_{0};
@@ -42,6 +45,7 @@ private:
 	HFONT link_font_{NULL};
 	HCURSOR hand_cursor_{NULL};
 	int hover_item_{-1};
+	UINT dpi_{USER_DEFAULT_SCREEN_DPI};
 	std::vector<blocker_info> blockers_;
 
 	int extract_icon(const std::wstring &exe_path);

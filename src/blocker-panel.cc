@@ -18,7 +18,7 @@ static const COLORREF link_color = RGB(128, 245, 210);
 static const COLORREF link_hover_color = RGB(180, 255, 235);
 static const COLORREF bg_color = RGB(12, 17, 22);
 
-blocker_panel::blocker_panel(HWND parent, int x, int y, int w, int h)
+blocker_panel::blocker_panel(HWND parent, int x, int y, int w, int h, UINT dpi) : dpi_(dpi)
 {
 	hwnd_ = CreateWindowEx(0, WC_LISTVIEW, L"",
 			       WS_CHILD | WS_BORDER | LVS_REPORT | LVS_NOCOLUMNHEADER | LVS_SINGLESEL | LVS_NOSORTHEADER, x, y, w, h, parent, NULL, NULL,
@@ -35,17 +35,21 @@ blocker_panel::blocker_panel(HWND parent, int x, int y, int w, int h)
 	ListView_SetTextBkColor(hwnd_, bg_color);
 	ListView_SetTextColor(hwnd_, RGB(255, 255, 255));
 
+	int s_popup_col = ScaleDPI(POPUP_COL_WIDTH, dpi_);
+	int s_scrollbar = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_);
+
 	LVCOLUMN col = {0};
 	col.mask = LVCF_WIDTH | LVCF_SUBITEM;
-	col.cx = w - POPUP_COL_WIDTH - GetSystemMetrics(SM_CXVSCROLL) - 4;
+	col.cx = w - s_popup_col - s_scrollbar - ScaleDPI(4, dpi_);
 	col.iSubItem = COL_NAME;
 	ListView_InsertColumn(hwnd_, COL_NAME, &col);
 
-	col.cx = POPUP_COL_WIDTH;
+	col.cx = s_popup_col;
 	col.iSubItem = COL_POPUP;
 	ListView_InsertColumn(hwnd_, COL_POPUP, &col);
 
-	image_list_ = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 4, 4);
+	int icon_size = ScaleDPI(16, dpi_);
+	image_list_ = ImageList_Create(icon_size, icon_size, ILC_COLOR32 | ILC_MASK, 4, 4);
 	ListView_SetImageList(hwnd_, image_list_, LVSIL_SMALL);
 
 	hand_cursor_ = LoadCursor(NULL, IDC_HAND);
@@ -97,7 +101,7 @@ void blocker_panel::measure(HDC hdc, int max_width)
 	if (item_count <= 0)
 		item_count = 1;
 
-	int item_height = 24;
+	int item_height = ScaleDPI(24, dpi_);
 	if (ListView_GetItemCount(hwnd_) > 0) {
 		RECT rc = {0};
 		ListView_GetItemRect(hwnd_, 0, &rc, LVIR_BOUNDS);
@@ -105,16 +109,18 @@ void blocker_panel::measure(HDC hdc, int max_width)
 			item_height = rc.bottom - rc.top;
 	}
 
-	rect_ = {0, 0, max_width, item_count * item_height + 4};
+	rect_ = {0, 0, max_width, item_count * item_height + ScaleDPI(4, dpi_)};
 }
 
 void blocker_panel::set_position(int x, int y, int w, int h)
 {
 	SetWindowPos(hwnd_, 0, x, y, w, h, SWP_ASYNCWINDOWPOS);
 
-	int name_col_width = w - POPUP_COL_WIDTH - GetSystemMetrics(SM_CXVSCROLL) - 4;
-	if (name_col_width < 50)
-		name_col_width = 50;
+	int s_popup_col = ScaleDPI(POPUP_COL_WIDTH, dpi_);
+	int s_scrollbar = GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_);
+	int name_col_width = w - s_popup_col - s_scrollbar - ScaleDPI(4, dpi_);
+	if (name_col_width < ScaleDPI(50, dpi_))
+		name_col_width = ScaleDPI(50, dpi_);
 	ListView_SetColumnWidth(hwnd_, COL_NAME, name_col_width);
 }
 
@@ -135,6 +141,7 @@ void blocker_panel::set_font(HFONT font)
 int blocker_panel::extract_icon(const std::wstring &exe_path)
 {
 	HICON hIcon = NULL;
+	int icon_size = ScaleDPI(16, dpi_);
 
 	if (!exe_path.empty()) {
 		SHFILEINFO sfi = {0};
@@ -151,6 +158,13 @@ int blocker_panel::extract_icon(const std::wstring &exe_path)
 	}
 
 	if (hIcon) {
+		/* Resize icon to match ImageList dimensions so it aligns with text */
+		HICON hResized = (HICON)CopyImage(hIcon, IMAGE_ICON, icon_size, icon_size, 0);
+		if (hResized) {
+			DestroyIcon(hIcon);
+			hIcon = hResized;
+		}
+
 		int idx = ImageList_AddIcon(image_list_, hIcon);
 		DestroyIcon(hIcon);
 		return idx;
@@ -289,6 +303,34 @@ bool blocker_panel::handle_click(LPARAM lParam)
 		}
 	}
 	return false;
+}
+
+void blocker_panel::update_dpi(UINT dpi)
+{
+	dpi_ = dpi;
+
+	/* Recreate image list at new icon size; swap before destroying
+	 * so the list view never references a destroyed image list. */
+	int icon_size = ScaleDPI(16, dpi_);
+	HIMAGELIST new_list = ImageList_Create(icon_size, icon_size, ILC_COLOR32 | ILC_MASK, 4, 4);
+	HIMAGELIST old_list = ListView_SetImageList(hwnd_, new_list, LVSIL_SMALL);
+	if (old_list)
+		ImageList_Destroy(old_list);
+	image_list_ = new_list;
+
+	/* Re-extract icons for existing blockers at new size */
+	for (int i = 0; i < (int)blockers_.size(); i++) {
+		int icon_index = extract_icon(blockers_[i].exe_path);
+		LVITEM lvi = {0};
+		lvi.mask = LVIF_IMAGE;
+		lvi.iItem = i;
+		lvi.iImage = icon_index;
+		ListView_SetItem(hwnd_, &lvi);
+	}
+
+	/* Update column widths */
+	int s_popup_col = ScaleDPI(POPUP_COL_WIDTH, dpi_);
+	ListView_SetColumnWidth(hwnd_, COL_POPUP, s_popup_col);
 }
 
 LRESULT CALLBACK blocker_panel::subclass_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)

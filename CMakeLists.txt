@@ -121,8 +121,8 @@ target_link_libraries(slobs-updater Crypt32)
 
 target_compile_definitions(slobs-updater
 	PRIVATE
-	-D_WIN32_WINNT=0x600
-	-DWINVER=0x600
+	-D_WIN32_WINNT=0x0A00
+	-DWINVER=0x0A00
 	-DNOMINMAX
 	-DWIN32_LEAN_AND_MEAN
 	-DUNICODE
