@@ -1306,7 +1306,7 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		if (!ctx)
 			break;
 
-		ctx->current_dpi = HIWORD(wParam);
+		ctx->current_dpi = LOWORD(wParam);
 		ctx->setupFont();
 
 		/* Use Windows-provided suggested rect to preserve visual position */
