@@ -274,11 +274,11 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 			       WS_OVERLAPPED | WS_MINIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, (sw - init_w) / 2, (sh - init_h) / 2, init_w, init_h, NULL,
 			       NULL, hInstance, NULL);
 
-	SetWindowLongPtr(frame, GWLP_USERDATA, (LONG_PTR)this);
-
 	if (!frame) {
 		do_fail(getDefaultErrorMessage(), L"CreateWindowEx");
 	}
+
+	SetWindowLongPtr(frame, GWLP_USERDATA, (LONG_PTR)this);
 
 	/* Refine DPI now that we have a window handle */
 	current_dpi = GetDpiForWindow(frame);
@@ -362,11 +362,6 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 
 void callbacks_impl::setupFont()
 {
-	if (main_font) {
-		DeleteObject(main_font);
-		main_font = NULL;
-	}
-
 	LOGFONT lf = {0};
 	lf.lfHeight = ScaleDPI(22, current_dpi);
 	lf.lfWidth = 0;
@@ -383,15 +378,22 @@ void callbacks_impl::setupFont()
 	lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
 	lstrcpy(lf.lfFaceName, L"SEGOE UI");
 
-	main_font = CreateFontIndirect(&lf);
+	HFONT new_font = CreateFontIndirect(&lf);
 
-	SendMessage(frame, WM_SETFONT, WPARAM(main_font), TRUE);
-	SendMessage(progress_label, WM_SETFONT, WPARAM(main_font), TRUE);
-	SendMessage(kill_button, WM_SETFONT, WPARAM(main_font), TRUE);
-	SendMessage(continue_button, WM_SETFONT, WPARAM(main_font), TRUE);
-	SendMessage(cancel_button, WM_SETFONT, WPARAM(main_font), TRUE);
-	text_panel_->set_font(main_font);
-	blocker_panel_->set_font(main_font);
+	/* Apply the new font to all controls before deleting the old one
+	 * so no control ever references a deleted HFONT. */
+	SendMessage(frame, WM_SETFONT, WPARAM(new_font), TRUE);
+	SendMessage(progress_label, WM_SETFONT, WPARAM(new_font), TRUE);
+	SendMessage(kill_button, WM_SETFONT, WPARAM(new_font), TRUE);
+	SendMessage(continue_button, WM_SETFONT, WPARAM(new_font), TRUE);
+	SendMessage(cancel_button, WM_SETFONT, WPARAM(new_font), TRUE);
+	text_panel_->set_font(new_font);
+	blocker_panel_->set_font(new_font);
+
+	HFONT old_font = main_font;
+	main_font = new_font;
+	if (old_font)
+		DeleteObject(old_font);
 }
 
 void callbacks_impl::repostionUI()
@@ -483,6 +485,9 @@ callbacks_impl::~callbacks_impl()
 	}
 	if (kev_btn_brush != NULL) {
 		DeleteObject(kev_btn_brush);
+	}
+	if (main_font != NULL) {
+		DeleteObject(main_font);
 	}
 }
 
@@ -1317,6 +1322,32 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		if (ctx->blocker_panel_)
 			ctx->blocker_panel_->update_dpi(ctx->current_dpi);
 
+		/* Re-measure progress label text at new DPI / font size */
+		{
+			wchar_t label_buf[512] = {};
+			GetWindowTextW(ctx->progress_label, label_buf, _countof(label_buf));
+			if (label_buf[0]) {
+				HDC hdc = GetDC(hwnd);
+				HFONT old_font = (HFONT)SelectObject(hdc, ctx->main_font);
+				ctx->progress_label_rect = {0};
+				DrawTextW(hdc, label_buf, -1, &ctx->progress_label_rect, DT_CALCRECT | DT_NOCLIP);
+				ctx->progress_label_rect.right -= ctx->progress_label_rect.left;
+
+				int s_min_width = ScaleDPI(ui_min_width, ctx->current_dpi);
+				if (ctx->progress_label_rect.right < s_min_width)
+					ctx->progress_label_rect.right = s_min_width;
+
+				/* Re-measure the active panel at new DPI */
+				if (ctx->active_panel && ctx->active_panel->is_visible())
+					ctx->active_panel->measure(hdc, ctx->progress_label_rect.right);
+
+				SelectObject(hdc, old_font);
+				ReleaseDC(hwnd, hdc);
+			}
+		}
+
+		/* Ensure repostionUI does not re-center over the suggested rect */
+		ctx->initial_position_set = true;
 		ctx->repostionUI();
 		break;
 	}

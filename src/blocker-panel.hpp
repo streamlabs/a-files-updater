@@ -2,6 +2,7 @@
 
 #include "content-panel.hpp"
 #include "update-blockers.hpp"
+#include "utils.hpp"
 #include <commctrl.h>
 #include <vector>
 

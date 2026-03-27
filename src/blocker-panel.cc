@@ -141,6 +141,7 @@ void blocker_panel::set_font(HFONT font)
 int blocker_panel::extract_icon(const std::wstring &exe_path)
 {
 	HICON hIcon = NULL;
+	int icon_size = ScaleDPI(16, dpi_);
 
 	if (!exe_path.empty()) {
 		SHFILEINFO sfi = {0};
@@ -157,6 +158,13 @@ int blocker_panel::extract_icon(const std::wstring &exe_path)
 	}
 
 	if (hIcon) {
+		/* Resize icon to match ImageList dimensions so it aligns with text */
+		HICON hResized = (HICON)CopyImage(hIcon, IMAGE_ICON, icon_size, icon_size, 0);
+		if (hResized) {
+			DestroyIcon(hIcon);
+			hIcon = hResized;
+		}
+
 		int idx = ImageList_AddIcon(image_list_, hIcon);
 		DestroyIcon(hIcon);
 		return idx;
@@ -301,13 +309,14 @@ void blocker_panel::update_dpi(UINT dpi)
 {
 	dpi_ = dpi;
 
-	/* Recreate image list at new icon size */
+	/* Recreate image list at new icon size; swap before destroying
+	 * so the list view never references a destroyed image list. */
 	int icon_size = ScaleDPI(16, dpi_);
-	if (image_list_) {
-		ImageList_Destroy(image_list_);
-	}
-	image_list_ = ImageList_Create(icon_size, icon_size, ILC_COLOR32 | ILC_MASK, 4, 4);
-	ListView_SetImageList(hwnd_, image_list_, LVSIL_SMALL);
+	HIMAGELIST new_list = ImageList_Create(icon_size, icon_size, ILC_COLOR32 | ILC_MASK, 4, 4);
+	HIMAGELIST old_list = ListView_SetImageList(hwnd_, new_list, LVSIL_SMALL);
+	if (old_list)
+		ImageList_Destroy(old_list);
+	image_list_ = new_list;
 
 	/* Re-extract icons for existing blockers at new size */
 	for (int i = 0; i < (int)blockers_.size(); i++) {
