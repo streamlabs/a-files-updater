@@ -5,6 +5,15 @@
 #include <unordered_map>
 #include <vector>
 
+#ifndef USER_DEFAULT_SCREEN_DPI
+#define USER_DEFAULT_SCREEN_DPI 96
+#endif
+
+inline int ScaleDPI(int value, UINT dpi)
+{
+	return MulDiv(value, dpi, USER_DEFAULT_SCREEN_DPI);
+}
+
 namespace fs = std::filesystem;
 
 /* We cannot use the default WM_CLOSE since there

@@ -100,8 +100,8 @@ struct callbacks_impl : public install_callbacks,
 			pid_callbacks,
 			blocker_callbacks,
 			disk_space_callbacks {
-	int screen_width{0};
-	int screen_height{0};
+	UINT current_dpi{USER_DEFAULT_SCREEN_DPI};
+	bool initial_position_set{false};
 	int width{500};
 	int height{ui_basic_height * 4 + ui_padding * 2};
 
@@ -253,9 +253,8 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 	dlg_bg_brush = CreateSolidBrush(dlg_bg_color);
 	edit_bg_brush = CreateSolidBrush(edit_bg_color);
 
-	/* We only care about the main display */
-	screen_width = GetSystemMetrics(SM_CXSCREEN);
-	screen_height = GetSystemMetrics(SM_CYSCREEN);
+	/* Query system DPI before window creation for initial sizing */
+	current_dpi = GetDpiForSystem();
 
 	/* FIXME: This feels a little dirty */
 	auto do_fail = [this](const std::string &user_msg, LPCWSTR context_msg) {
@@ -266,9 +265,14 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		throw std::runtime_error("");
 	};
 
+	int init_w = ScaleDPI(width, current_dpi);
+	int init_h = ScaleDPI(height, current_dpi);
+	int sw = GetSystemMetricsForDpi(SM_CXSCREEN, current_dpi);
+	int sh = GetSystemMetricsForDpi(SM_CYSCREEN, current_dpi);
+
 	frame = CreateWindowEx(WS_EX_CLIENTEDGE, TEXT("UpdaterFrame"), TEXT("Streamlabs Desktop Updater"),
-			       WS_OVERLAPPED | WS_MINIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, (screen_width - width) / 2, (screen_height - height) / 2, width,
-			       height, NULL, NULL, hInstance, NULL);
+			       WS_OVERLAPPED | WS_MINIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, (sw - init_w) / 2, (sh - init_h) / 2, init_w, init_h, NULL,
+			       NULL, hInstance, NULL);
 
 	SetWindowLongPtr(frame, GWLP_USERDATA, (LONG_PTR)this);
 
@@ -276,10 +280,17 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		do_fail(getDefaultErrorMessage(), L"CreateWindowEx");
 	}
 
+	/* Refine DPI now that we have a window handle */
+	current_dpi = GetDpiForWindow(frame);
+
 	GetClientRect(frame, &rcParent);
 
-	int x_pos = ui_padding;
-	int y_size = ui_basic_height;
+	int s_padding = ScaleDPI(ui_padding, current_dpi);
+	int s_basic_height = ScaleDPI(ui_basic_height, current_dpi);
+	int s_button_width = ScaleDPI(100, current_dpi);
+
+	int x_pos = s_padding;
+	int y_size = s_basic_height;
 	int x_size = (rcParent.right - rcParent.left) - (x_pos * 2);
 	int y_pos = ((rcParent.bottom - rcParent.top) / 2) - (y_size / 2);
 
@@ -298,8 +309,8 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 	update_btn_label = ConvertToUtf16WS(boost::locale::translate("Upgrade"));
 	remind_btn_label = ConvertToUtf16WS(boost::locale::translate("Later"));
 
-	progress_label = CreateWindow(WC_STATIC, checking_packages_label.c_str(), WS_CHILD | WS_VISIBLE, x_pos, ui_padding, x_size, ui_basic_height, frame,
-				      NULL, NULL, NULL);
+	progress_label =
+		CreateWindow(WC_STATIC, checking_packages_label.c_str(), WS_CHILD | WS_VISIBLE, x_pos, s_padding, x_size, s_basic_height, frame, NULL, NULL, NULL);
 
 	if (!progress_label) {
 		do_fail(getDefaultErrorMessage(), L"CreateWindow");
@@ -311,39 +322,36 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 		do_fail(getDefaultErrorMessage(), L"SetWindowSubclass");
 	}
 
-	text_panel_ = std::make_unique<text_panel>(frame, x_pos, y_pos, x_size, ui_basic_height * 2, blockers_list_label.c_str());
+	text_panel_ = std::make_unique<text_panel>(frame, x_pos, y_pos, x_size, s_basic_height * 2, blockers_list_label.c_str());
 
 	if (!text_panel_->hwnd()) {
 		do_fail(getDefaultErrorMessage(), L"text_panel creation");
 	}
 
-	blocker_panel_ = std::make_unique<blocker_panel>(frame, x_pos, y_pos, x_size, ui_basic_height * 4);
+	blocker_panel_ = std::make_unique<blocker_panel>(frame, x_pos, y_pos, x_size, s_basic_height * 4, current_dpi);
 
 	if (!blocker_panel_->hwnd()) {
 		do_fail(getDefaultErrorMessage(), L"blocker_panel creation");
 	}
 
-	kill_button = CreateWindow(WC_BUTTON, stop_all_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW, x_size + ui_padding - 100,
-				   rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL, NULL);
+	kill_button = CreateWindow(WC_BUTTON, stop_all_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW,
+				   x_size + s_padding - s_button_width, rcParent.bottom - rcParent.top, s_button_width, s_basic_height, frame, NULL, NULL, NULL);
 
-	continue_button = CreateWindow(WC_BUTTON, continue_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW, x_size + ui_padding - 100,
-				       rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL, NULL);
+	continue_button =
+		CreateWindow(WC_BUTTON, continue_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW, x_size + s_padding - s_button_width,
+			     rcParent.bottom - rcParent.top, s_button_width, s_basic_height, frame, NULL, NULL, NULL);
 
 	cancel_button = CreateWindow(WC_BUTTON, cancel_label.c_str(), WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON | BS_OWNERDRAW,
-				     x_size + ui_padding - 100 - ui_padding - 100, rcParent.bottom - rcParent.top, 100, ui_basic_height, frame, NULL, NULL,
-				     NULL);
+				     x_size + s_padding - s_button_width - s_padding - s_button_width, rcParent.bottom - rcParent.top, s_button_width,
+				     s_basic_height, frame, NULL, NULL, NULL);
 
 	//make the buttons rounded - after SetWindowRgn, window owns HRGNs and will destroy them
-	RECT btnRect = {0};
-	int cRounding = 4;
-	GetClientRect(kill_button, &btnRect);
-	HRGN rgn = CreateRoundRectRgn(0, 0, btnRect.right, btnRect.bottom, cRounding, cRounding);
+	int cRounding = ScaleDPI(4, current_dpi);
+	HRGN rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
 	SetWindowRgn(kill_button, rgn, true);
-	GetClientRect(continue_button, &btnRect);
-	rgn = CreateRoundRectRgn(0, 0, btnRect.right, btnRect.bottom, cRounding, cRounding);
+	rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
 	SetWindowRgn(continue_button, rgn, true);
-	GetClientRect(cancel_button, &btnRect);
-	rgn = CreateRoundRectRgn(0, 0, btnRect.right, btnRect.bottom, cRounding, cRounding);
+	rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
 	SetWindowRgn(cancel_button, rgn, true);
 
 	SendMessage(progress_worker, PBM_SETBARCOLOR, 0, kev_color);
@@ -354,8 +362,13 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 
 void callbacks_impl::setupFont()
 {
+	if (main_font) {
+		DeleteObject(main_font);
+		main_font = NULL;
+	}
+
 	LOGFONT lf = {0};
-	lf.lfHeight = 22;
+	lf.lfHeight = ScaleDPI(22, current_dpi);
 	lf.lfWidth = 0;
 	lf.lfEscapement = 0;
 	lf.lfOrientation = 0;
@@ -383,44 +396,58 @@ void callbacks_impl::setupFont()
 
 void callbacks_impl::repostionUI()
 {
-	int frame_h = ui_padding;
+	int s_padding = ScaleDPI(ui_padding, current_dpi);
+	int s_basic_height = ScaleDPI(ui_basic_height, current_dpi);
+	int s_min_width = ScaleDPI(ui_min_width, current_dpi);
+	int s_button_width = ScaleDPI(100, current_dpi);
+
+	int frame_h = s_padding;
 	int main_w = progress_label_rect.right;
 
-	if (main_w < ui_min_width)
-		main_w = ui_min_width;
+	if (main_w < s_min_width)
+		main_w = s_min_width;
 
-	SetWindowPos(progress_label, 0, ui_padding, ui_padding, main_w, progress_label_rect.bottom, SWP_ASYNCWINDOWPOS);
+	SetWindowPos(progress_label, 0, s_padding, s_padding, main_w, progress_label_rect.bottom, SWP_ASYNCWINDOWPOS);
 
-	int frame_w = main_w + ui_padding * 2;
-	frame_h += progress_label_rect.bottom + ui_padding;
+	int frame_w = main_w + s_padding * 2;
+	frame_h += progress_label_rect.bottom + s_padding;
 
 	if (active_panel && active_panel->is_visible()) {
 		RECT panel_rect = active_panel->desired_rect();
+		int s_screen_h = GetSystemMetricsForDpi(SM_CYSCREEN, current_dpi);
 		//if panel has so much text that it exceeds screen height, readjust so it's not more than 75% of screen height
-		if ((frame_h + panel_rect.bottom) > screen_height) {
-			panel_rect.bottom -= ((frame_h + panel_rect.bottom) - static_cast<int>(ceil(screen_height * 0.75)));
+		if ((frame_h + panel_rect.bottom) > s_screen_h) {
+			panel_rect.bottom -= ((frame_h + panel_rect.bottom) - static_cast<int>(ceil(s_screen_h * 0.75)));
 		}
 		//if right is larger than 75% width (75% to make it look better than using full size), add some height so aren't scrolling 1 line at a time
 		if (panel_rect.right > (main_w * .75)) {
-			panel_rect.bottom += ui_padding * 5;
+			panel_rect.bottom += s_padding * 5;
 		}
-		active_panel->set_position(ui_padding, frame_h, main_w, panel_rect.bottom);
-		frame_h += panel_rect.bottom + ui_padding;
+		active_panel->set_position(s_padding, frame_h, main_w, panel_rect.bottom);
+		frame_h += panel_rect.bottom + s_padding;
 	}
 
 	if (IsWindowVisible(progress_worker)) {
-		SetWindowPos(progress_worker, 0, ui_padding, frame_h, main_w, ui_basic_height, SWP_ASYNCWINDOWPOS);
-		frame_h += ui_basic_height + ui_padding;
+		SetWindowPos(progress_worker, 0, s_padding, frame_h, main_w, s_basic_height, SWP_ASYNCWINDOWPOS);
+		frame_h += s_basic_height + s_padding;
 	}
 
 	if (IsWindowVisible(continue_button) || IsWindowVisible(kill_button) || IsWindowVisible(cancel_button)) {
-		int button_left = main_w + ui_padding - 100;
-		SetWindowPos(continue_button, 0, button_left, frame_h, 0, 0, SWP_ASYNCWINDOWPOS | SWP_NOSIZE);
-		SetWindowPos(kill_button, 0, button_left, frame_h, 0, 0, SWP_ASYNCWINDOWPOS | SWP_NOSIZE);
-		SetWindowPos(cancel_button, 0, button_left - 100 - ui_padding, frame_h, 0, 0, SWP_ASYNCWINDOWPOS | SWP_NOSIZE);
-		frame_h += ui_basic_height + ui_padding;
+		int button_left = main_w + s_padding - s_button_width;
+		SetWindowPos(continue_button, 0, button_left, frame_h, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
+		SetWindowPos(kill_button, 0, button_left, frame_h, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
+		SetWindowPos(cancel_button, 0, button_left - s_button_width - s_padding, frame_h, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
+		//reapply rounded regions at scaled size
+		int cRounding = ScaleDPI(4, current_dpi);
+		HRGN rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
+		SetWindowRgn(continue_button, rgn, true);
+		rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
+		SetWindowRgn(kill_button, rgn, true);
+		rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
+		SetWindowRgn(cancel_button, rgn, true);
+		frame_h += s_basic_height + s_padding;
 	} else {
-		frame_h += ui_basic_height;
+		frame_h += s_basic_height;
 	}
 
 	RECT winRect = {0};
@@ -430,8 +457,17 @@ void callbacks_impl::repostionUI()
 
 	frame_h += (winRect.bottom - winRect.top) - clientRect.bottom;
 	frame_w += (winRect.right - winRect.left) - clientRect.right;
-	//adjust window to the middle of the screen
-	SetWindowPos(frame, 0, (screen_width - frame_w) / 2, (screen_height - frame_h) / 2, frame_w, frame_h, SWP_NOREPOSITION | SWP_ASYNCWINDOWPOS);
+
+	if (!initial_position_set) {
+		//center window on screen for first appearance
+		int s_screen_w = GetSystemMetricsForDpi(SM_CXSCREEN, current_dpi);
+		int s_screen_h = GetSystemMetricsForDpi(SM_CYSCREEN, current_dpi);
+		SetWindowPos(frame, 0, (s_screen_w - frame_w) / 2, (s_screen_h - frame_h) / 2, frame_w, frame_h, SWP_NOZORDER | SWP_ASYNCWINDOWPOS);
+		initial_position_set = true;
+	} else {
+		//resize in-place, keep current position
+		SetWindowPos(frame, 0, 0, 0, frame_w, frame_h, SWP_NOMOVE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS);
+	}
 }
 
 callbacks_impl::~callbacks_impl()
@@ -913,9 +949,11 @@ void callbacks_impl::calculate_text_dimensions(const std::wstring &title, RECT &
 	RECT rcClient{};
 	GetClientRect(frame, &rcClient);
 
-	int calc_w = (rcClient.right - rcClient.left) - (ui_padding * 2);
-	if (calc_w < ui_min_width)
-		calc_w = ui_min_width;
+	int s_padding = ScaleDPI(ui_padding, current_dpi);
+	int s_min_width = ScaleDPI(ui_min_width, current_dpi);
+	int calc_w = (rcClient.right - rcClient.left) - (s_padding * 2);
+	if (calc_w < s_min_width)
+		calc_w = s_min_width;
 
 	HDC hdc = GetDC(frame);
 	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
@@ -1262,6 +1300,26 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case CUSTOM_CLOSE_MSG:
 		DestroyWindow(hwnd);
 		break;
+	case WM_DPICHANGED: {
+		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
+		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
+		if (!ctx)
+			break;
+
+		ctx->current_dpi = HIWORD(wParam);
+		ctx->setupFont();
+
+		/* Use Windows-provided suggested rect to preserve visual position */
+		RECT *suggested = reinterpret_cast<RECT *>(lParam);
+		SetWindowPos(hwnd, NULL, suggested->left, suggested->top, suggested->right - suggested->left, suggested->bottom - suggested->top,
+			     SWP_NOZORDER | SWP_NOACTIVATE);
+
+		if (ctx->blocker_panel_)
+			ctx->blocker_panel_->update_dpi(ctx->current_dpi);
+
+		ctx->repostionUI();
+		break;
+	}
 	case CUSTOM_ERROR_MSG: {
 		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
 		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
