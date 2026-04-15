@@ -2,8 +2,10 @@
 #include "logger/log.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 #pragma comment(lib, "Rstrtmgr.lib")
+#pragma comment(lib, "Version.lib")
 
 bool is_virtualcam_file(const fs::path &relative_path)
 {
@@ -130,9 +132,43 @@ static BOOL CALLBACK find_visible_window_cb(HWND hwnd, LPARAM lParam)
 	return TRUE;
 }
 
+static std::wstring get_file_description(const std::wstring &exe_path)
+{
+	if (exe_path.empty())
+		return {};
+
+	DWORD dummy = 0;
+	DWORD size = GetFileVersionInfoSizeW(exe_path.c_str(), &dummy);
+	if (size == 0)
+		return {};
+
+	std::vector<BYTE> buffer(size);
+	if (!GetFileVersionInfoW(exe_path.c_str(), 0, size, buffer.data()))
+		return {};
+
+	struct LANGANDCODEPAGE {
+		WORD wLanguage;
+		WORD wCodePage;
+	} *translations = nullptr;
+	UINT trans_size = 0;
+
+	if (!VerQueryValueW(buffer.data(), L"\\VarFileInfo\\Translation", (LPVOID *)&translations, &trans_size) || trans_size < sizeof(*translations))
+		return {};
+
+	wchar_t sub_block[64];
+	swprintf(sub_block, 64, L"\\StringFileInfo\\%04x%04x\\FileDescription", translations[0].wLanguage, translations[0].wCodePage);
+
+	LPWSTR description = nullptr;
+	UINT desc_len = 0;
+	if (VerQueryValueW(buffer.data(), sub_block, (LPVOID *)&description, &desc_len) && desc_len > 0)
+		return std::wstring(description);
+
+	return {};
+}
+
 std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers)
 {
-	std::vector<blocker_info> result;
+	std::vector<blocker_info> all_entries;
 	std::unique_lock<std::mutex> ulock(blockers.mtx);
 
 	for (auto &entry : blockers.list) {
@@ -161,7 +197,57 @@ std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers)
 			info.has_window = fwd.found;
 		}
 
-		result.push_back(std::move(info));
+		all_entries.push_back(std::move(info));
+	}
+	ulock.unlock();
+
+	/* Deduplicate: group by exe_path (or app_name if exe_path is empty).
+	 * Keep the entry with has_window=true when possible, so the "Bring up"
+	 * button targets the interactive process. */
+	std::unordered_map<std::wstring, size_t> seen;
+	std::vector<blocker_info> result;
+
+	for (auto &info : all_entries) {
+		const std::wstring &key = info.exe_path.empty() ? info.app_name : info.exe_path;
+
+		auto it = seen.find(key);
+		if (it != seen.end()) {
+			/* Prefer the entry with a visible window */
+			if (info.has_window && !result[it->second].has_window) {
+				result[it->second] = std::move(info);
+			}
+		} else {
+			seen[key] = result.size();
+			result.push_back(std::move(info));
+		}
+	}
+
+	/* Disambiguate entries that share the same app_name but have different
+	 * exe_path (e.g. Chrome vs Chrome Beta both report "Google Chrome").
+	 * Use FileDescription from version info for a better display name. */
+	std::unordered_map<std::wstring, int> name_counts;
+	for (auto &info : result)
+		name_counts[info.app_name]++;
+
+	for (auto &info : result) {
+		if (name_counts[info.app_name] <= 1)
+			continue;
+
+		std::wstring desc = get_file_description(info.exe_path);
+		if (!desc.empty() && desc != info.app_name) {
+			info.app_name = desc;
+		} else if (!info.exe_path.empty()) {
+			/* Fallback: use the product folder from the exe path
+			 * e.g. "C:\...\Chrome Beta\Application\chrome.exe" -> "Chrome Beta" */
+			fs::path exe(info.exe_path);
+			fs::path parent = exe.parent_path();
+			if (parent.has_parent_path()) {
+				std::wstring folder = parent.parent_path().filename().wstring();
+				if (!folder.empty()) {
+					info.app_name += L" (" + folder + L")";
+				}
+			}
+		}
 	}
 
 	return result;

@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <tlhelp32.h>
 
 #pragma comment(lib, "Shell32.lib")
 
@@ -252,31 +253,84 @@ LRESULT blocker_panel::handle_custom_draw(LPNMLVCUSTOMDRAW lvcd)
 	return CDRF_DODEFAULT;
 }
 
-struct enum_wnd_data {
-	DWORD target_pid;
+struct enum_best_wnd_data {
+	std::vector<DWORD> pids;
 	HWND result;
+	int best_area;
 };
 
-static BOOL CALLBACK find_main_window_cb(HWND hwnd, LPARAM lParam)
+static BOOL CALLBACK find_best_window_cb(HWND hwnd, LPARAM lParam)
 {
-	auto *data = reinterpret_cast<enum_wnd_data *>(lParam);
+	auto *data = reinterpret_cast<enum_best_wnd_data *>(lParam);
 	DWORD pid = 0;
 	GetWindowThreadProcessId(hwnd, &pid);
 
-	if (pid == data->target_pid && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == NULL) {
-		data->result = hwnd;
-		return FALSE;
+	bool pid_match = false;
+	for (DWORD p : data->pids) {
+		if (p == pid) {
+			pid_match = true;
+			break;
+		}
+	}
+
+	if (pid_match && IsWindowVisible(hwnd) && GetWindow(hwnd, GW_OWNER) == NULL) {
+		RECT rc;
+		if (GetWindowRect(hwnd, &rc)) {
+			int area = (rc.right - rc.left) * (rc.bottom - rc.top);
+			if (area > data->best_area) {
+				data->best_area = area;
+				data->result = hwnd;
+			}
+		}
 	}
 	return TRUE;
 }
 
-void blocker_panel::bring_to_front(DWORD pid)
+static std::vector<DWORD> find_pids_for_exe(const std::wstring &exe_path)
+{
+	std::vector<DWORD> pids;
+	if (exe_path.empty())
+		return pids;
+
+	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (snap == INVALID_HANDLE_VALUE)
+		return pids;
+
+	PROCESSENTRY32W pe = {sizeof(pe)};
+	if (Process32FirstW(snap, &pe)) {
+		do {
+			HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+			if (hProc) {
+				WCHAR sz[MAX_PATH];
+				DWORD cch = MAX_PATH;
+				if (QueryFullProcessImageNameW(hProc, 0, sz, &cch) && cch <= MAX_PATH) {
+					if (_wcsicmp(sz, exe_path.c_str()) == 0) {
+						pids.push_back(pe.th32ProcessID);
+					}
+				}
+				CloseHandle(hProc);
+			}
+		} while (Process32NextW(snap, &pe));
+	}
+	CloseHandle(snap);
+	return pids;
+}
+
+void blocker_panel::bring_to_front(DWORD pid, const std::wstring &exe_path)
 {
 	if (pid == 0)
 		return;
 
-	enum_wnd_data data = {pid, NULL};
-	EnumWindows(find_main_window_cb, (LPARAM)&data);
+	/* Collect all PIDs running the same executable so we can find the main
+	 * window even when the DLL-locking process is a worker/child. */
+	std::vector<DWORD> pids = find_pids_for_exe(exe_path);
+	if (pids.empty())
+		pids.push_back(pid);
+
+	/* Pick the largest visible top-level window — most likely the main
+	 * application window rather than a small overlay or notification. */
+	enum_best_wnd_data data = {std::move(pids), NULL, 0};
+	EnumWindows(find_best_window_cb, (LPARAM)&data);
 
 	if (data.result) {
 		if (IsIconic(data.result)) {
@@ -292,15 +346,10 @@ bool blocker_panel::handle_click(LPARAM lParam)
 	if (!pnm || pnm->hdr.hwndFrom != hwnd_)
 		return false;
 
-	if (pnm->iSubItem == COL_POPUP && pnm->iItem >= 0) {
-		LVITEM lvi = {0};
-		lvi.mask = LVIF_PARAM;
-		lvi.iItem = pnm->iItem;
-		if (ListView_GetItem(hwnd_, &lvi)) {
-			DWORD pid = (DWORD)lvi.lParam;
-			bring_to_front(pid);
-			return true;
-		}
+	if (pnm->iSubItem == COL_POPUP && pnm->iItem >= 0 && pnm->iItem < (int)blockers_.size()) {
+		const auto &info = blockers_[pnm->iItem];
+		bring_to_front(info.pid, info.exe_path);
+		return true;
 	}
 	return false;
 }
