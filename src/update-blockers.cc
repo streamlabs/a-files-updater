@@ -2,6 +2,7 @@
 #include "logger/log.h"
 
 #include <algorithm>
+#include <tlhelp32.h>
 #include <unordered_map>
 
 #pragma comment(lib, "Rstrtmgr.lib")
@@ -220,6 +221,42 @@ std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers)
 			seen[key] = result.size();
 			result.push_back(std::move(info));
 		}
+	}
+
+	/* Check sibling processes for visible windows. The PIDs reported by
+	 * the Restart Manager are often worker/child processes (e.g. Chrome
+	 * GPU process) that don't own the main app window. */
+	for (auto &info : result) {
+		if (info.has_window || info.exe_path.empty())
+			continue;
+
+		HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+		if (snap == INVALID_HANDLE_VALUE)
+			continue;
+
+		PROCESSENTRY32W pe = {sizeof(pe)};
+		if (Process32FirstW(snap, &pe)) {
+			do {
+				HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+				if (hProc) {
+					WCHAR sz[MAX_PATH];
+					DWORD cch = MAX_PATH;
+					if (QueryFullProcessImageNameW(hProc, 0, sz, &cch) && cch <= MAX_PATH) {
+						if (_wcsicmp(sz, info.exe_path.c_str()) == 0) {
+							find_window_data fwd = {pe.th32ProcessID, false};
+							EnumWindows(find_visible_window_cb, (LPARAM)&fwd);
+							if (fwd.found) {
+								info.has_window = true;
+							}
+						}
+					}
+					CloseHandle(hProc);
+				}
+				if (info.has_window)
+					break;
+			} while (Process32NextW(snap, &pe));
+		}
+		CloseHandle(snap);
 	}
 
 	/* Disambiguate entries that share the same app_name but have different
