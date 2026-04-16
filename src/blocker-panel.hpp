@@ -30,7 +30,7 @@ struct blocker_panel : public content_panel {
 
 	void set_blockers(const std::vector<blocker_info> &blockers);
 
-	static void bring_to_front(DWORD pid);
+	static void bring_to_front(DWORD pid, const std::wstring &exe_path);
 
 	bool handle_click(LPARAM lParam);
 
