@@ -1434,16 +1434,19 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		LONG_PTR user_data = GetWindowLongPtr(hwnd, GWLP_USERDATA);
 		auto ctx = reinterpret_cast<callbacks_impl *>(user_data);
 
-		SetBkMode((HDC)wParam, TRANSPARENT);
 		if (((HWND)lParam == ctx->progress_label) && ctx->prompting) {
+			SetBkMode((HDC)wParam, TRANSPARENT);
 			SetTextColor((HDC)wParam, kev_color);
 			SetBkColor((HDC)wParam, dlg_bg_color);
 			return (LRESULT)ctx->dlg_bg_brush;
 		} else if (ctx->text_panel_ && (HWND)lParam == ctx->text_panel_->hwnd()) {
+			//OPAQUE so the EDIT control fills behind glyphs during partial scroll repaints; TRANSPARENT leaves old text under new
+			SetBkMode((HDC)wParam, OPAQUE);
 			SetBkColor((HDC)wParam, edit_bg_color);
 			SetTextColor((HDC)wParam, white_color);
 			return (LRESULT)ctx->edit_bg_brush;
 		} else {
+			SetBkMode((HDC)wParam, TRANSPARENT);
 			SetTextColor((HDC)wParam, white_color);
 			SetBkColor((HDC)wParam, dlg_bg_color);
 			return (LRESULT)ctx->dlg_bg_brush;

@@ -81,8 +81,6 @@ void text_panel::set_font(HFONT font)
 LRESULT CALLBACK text_panel::subclass_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	switch (msg) {
-	case WM_HSCROLL:
-	case WM_VSCROLL:
 	case WM_SETTEXT: {
 		RECT rect;
 		HWND parent = GetParent(hwnd);
