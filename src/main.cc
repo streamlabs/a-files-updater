@@ -38,7 +38,8 @@ const int max_bandwidth_in_average = 8;
 
 const int ui_padding = 10;
 const int ui_basic_height = 40;
-const int ui_min_width = 400;
+const int ui_min_width = 600;
+const double ui_max_height_pct = 0.85;
 
 const COLORREF dlg_bg_color = RGB(23, 36, 45);
 const COLORREF edit_bg_color = RGB(12, 17, 22);
@@ -414,39 +415,28 @@ void callbacks_impl::repostionUI()
 	int frame_w = main_w + s_padding * 2;
 	frame_h += progress_label_rect.bottom + s_padding;
 
-	if (active_panel && active_panel->is_visible()) {
+	int panel_top = 0, panel_h = 0;
+	bool has_panel = (active_panel && active_panel->is_visible());
+	if (has_panel) {
 		RECT panel_rect = active_panel->desired_rect();
-		int s_screen_h = GetSystemMetricsForDpi(SM_CYSCREEN, current_dpi);
-		//if panel has so much text that it exceeds screen height, readjust so it's not more than 75% of screen height
-		if ((frame_h + panel_rect.bottom) > s_screen_h) {
-			panel_rect.bottom -= ((frame_h + panel_rect.bottom) - static_cast<int>(ceil(s_screen_h * 0.75)));
-		}
+		panel_h = panel_rect.bottom;
 		//if right is larger than 75% width (75% to make it look better than using full size), add some height so aren't scrolling 1 line at a time
 		if (panel_rect.right > (main_w * .75)) {
-			panel_rect.bottom += s_padding * 5;
+			panel_h += s_padding * 5;
 		}
-		active_panel->set_position(s_padding, frame_h, main_w, panel_rect.bottom);
-		frame_h += panel_rect.bottom + s_padding;
+		panel_top = frame_h;
+		frame_h += panel_h + s_padding;
 	}
 
+	int progress_top = -1, buttons_top = -1;
 	if (IsWindowVisible(progress_worker)) {
-		SetWindowPos(progress_worker, 0, s_padding, frame_h, main_w, s_basic_height, SWP_ASYNCWINDOWPOS);
+		progress_top = frame_h;
 		frame_h += s_basic_height + s_padding;
 	}
 
-	if (IsWindowVisible(continue_button) || IsWindowVisible(kill_button) || IsWindowVisible(cancel_button)) {
-		int button_left = main_w + s_padding - s_button_width;
-		SetWindowPos(continue_button, 0, button_left, frame_h, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
-		SetWindowPos(kill_button, 0, button_left, frame_h, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
-		SetWindowPos(cancel_button, 0, button_left - s_button_width - s_padding, frame_h, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
-		//reapply rounded regions at scaled size
-		int cRounding = ScaleDPI(4, current_dpi);
-		HRGN rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
-		SetWindowRgn(continue_button, rgn, true);
-		rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
-		SetWindowRgn(kill_button, rgn, true);
-		rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
-		SetWindowRgn(cancel_button, rgn, true);
+	bool has_buttons = IsWindowVisible(continue_button) || IsWindowVisible(kill_button) || IsWindowVisible(cancel_button);
+	if (has_buttons) {
+		buttons_top = frame_h;
 		frame_h += s_basic_height + s_padding;
 	} else {
 		frame_h += s_basic_height;
@@ -460,11 +450,63 @@ void callbacks_impl::repostionUI()
 	frame_h += (winRect.bottom - winRect.top) - clientRect.bottom;
 	frame_w += (winRect.right - winRect.left) - clientRect.right;
 
+	RECT work_area = {0};
+	BOOL have_work_area = SystemParametersInfoForDpi(SPI_GETWORKAREA, 0, &work_area, 0, current_dpi);
+	if (!have_work_area || work_area.right <= work_area.left || work_area.bottom <= work_area.top)
+		have_work_area = SystemParametersInfo(SPI_GETWORKAREA, 0, &work_area, 0);
+	if (!have_work_area || work_area.right <= work_area.left || work_area.bottom <= work_area.top) {
+		work_area.left = 0;
+		work_area.top = 0;
+		work_area.right = GetSystemMetricsForDpi(SM_CXSCREEN, current_dpi);
+		work_area.bottom = GetSystemMetricsForDpi(SM_CYSCREEN, current_dpi);
+	}
+	int s_work_h = work_area.bottom - work_area.top;
+	int s_work_w = work_area.right - work_area.left;
+	int max_frame_h = static_cast<int>(s_work_h * ui_max_height_pct);
+
+	//panel absorbs the cut so the buttons stay reachable; floor the panel so the scrollbar viewport stays usable
+	if (has_panel && frame_h > max_frame_h) {
+		int min_panel_h = ScaleDPI(120, current_dpi);
+		int new_panel_h = panel_h - (frame_h - max_frame_h);
+		if (new_panel_h < min_panel_h)
+			new_panel_h = min_panel_h;
+		int delta = panel_h - new_panel_h;
+		panel_h = new_panel_h;
+		if (progress_top >= 0)
+			progress_top -= delta;
+		if (buttons_top >= 0)
+			buttons_top -= delta;
+		frame_h -= delta;
+	}
+
+	if (has_panel)
+		active_panel->set_position(s_padding, panel_top, main_w, panel_h);
+	if (progress_top >= 0)
+		SetWindowPos(progress_worker, 0, s_padding, progress_top, main_w, s_basic_height, SWP_ASYNCWINDOWPOS);
+	if (buttons_top >= 0) {
+		int button_left = main_w + s_padding - s_button_width;
+		SetWindowPos(continue_button, 0, button_left, buttons_top, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
+		SetWindowPos(kill_button, 0, button_left, buttons_top, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
+		SetWindowPos(cancel_button, 0, button_left - s_button_width - s_padding, buttons_top, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
+		//reapply rounded regions at scaled size
+		int cRounding = ScaleDPI(4, current_dpi);
+		HRGN rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
+		SetWindowRgn(continue_button, rgn, true);
+		rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
+		SetWindowRgn(kill_button, rgn, true);
+		rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
+		SetWindowRgn(cancel_button, rgn, true);
+	}
+
 	if (!initial_position_set) {
-		//center window on screen for first appearance
-		int s_screen_w = GetSystemMetricsForDpi(SM_CXSCREEN, current_dpi);
-		int s_screen_h = GetSystemMetricsForDpi(SM_CYSCREEN, current_dpi);
-		SetWindowPos(frame, 0, (s_screen_w - frame_w) / 2, (s_screen_h - frame_h) / 2, frame_w, frame_h, SWP_NOZORDER | SWP_ASYNCWINDOWPOS);
+		//center window on the primary work area for first appearance, clamped so the top stays visible
+		int x = work_area.left + (s_work_w - frame_w) / 2;
+		int y = work_area.top + (s_work_h - frame_h) / 2;
+		if (x < work_area.left)
+			x = work_area.left;
+		if (y < work_area.top)
+			y = work_area.top;
+		SetWindowPos(frame, 0, x, y, frame_w, frame_h, SWP_NOZORDER | SWP_ASYNCWINDOWPOS);
 		initial_position_set = true;
 	} else {
 		//resize in-place, keep current position
