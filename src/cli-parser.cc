@@ -220,8 +220,8 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	log_path = params->temp_dir;
 	log_path /= "slobs-updater.log";
 
-	params->log_file_path = log_path.string();
-	params->log_file = fopen(log_path.string().c_str(), "w+");
+	params->log_file_path = log_path;
+	params->log_file = _wfopen(log_path.c_str(), L"w+");
 
 	/* If we fail, we just won't get a log file unfortunately */
 	if (params->log_file)
