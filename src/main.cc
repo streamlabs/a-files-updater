@@ -16,6 +16,7 @@
 #include "blocker-panel.hpp"
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <fstream>
 
@@ -163,7 +164,7 @@ struct callbacks_impl : public install_callbacks,
 
 	void initialize(struct update_client *client) final;
 	void success() final;
-	void error(const std::string &error, const std::string &error_type) final;
+	void error(const std::string &error, const std::string &category, const std::string &reason) final;
 
 	void downloader_preparing(bool connected) final;
 	void downloader_start(int num_threads, size_t num_files_) final;
@@ -565,10 +566,10 @@ void callbacks_impl::success()
 	PostMessage(frame, CUSTOM_CLOSE_MSG, NULL, NULL);
 }
 
-void callbacks_impl::error(const std::string &error, const std::string &error_type)
+void callbacks_impl::error(const std::string &error, const std::string &category, const std::string &reason)
 {
 	this->error_buf = error;
-	save_exit_error(error_type);
+	save_exit_error(category, reason);
 
 	PostMessage(frame, CUSTOM_ERROR_MSG, NULL, NULL);
 }
@@ -1269,6 +1270,7 @@ bool callbacks_impl::prompt_user(const char *pVersion, const char *pDetails)
 
 	return show_dialog(state);
 }
+
 bool callbacks_impl::prompt_file_removal()
 {
 	std::wstring wc_title = ConvertToUtf16WS(boost::locale::translate("Old File Removal"));
@@ -1575,14 +1577,14 @@ void exit_on_init_fail(MultiByteCommandLine &command_line)
 	if (command_line.argc() == 1 && is_launched_by_explorer()) {
 		ShowInfo(boost::locale::translate(
 			"You have launched the updater for Streamlabs Desktop, which can't work on its own. Please launch the Desktop App and it will check for updates automatically.\nIf you're having issues you can download the latest version from https://streamlabs.com/."));
-		save_exit_error("Launched manually");
+		save_exit_error("StartupSkipped", "Launched manually");
 	} else if (is_system_folder(params.app_dir)) {
 		ShowInfo(boost::locale::translate(
 			"Streamlabs Desktop installed in a system folder. Automatic updated has been disabled to prevent changes to a system folder. \nPlease install the latest version of Streamlabs Desktop from https://streamlabs.com/"));
-		save_exit_error("App installed in a system folder. Skip update.");
+		save_exit_error("StartupSkipped", "App in system folder");
 	} else {
 		ShowError(getDefaultErrorMessage());
-		save_exit_error("Failed parsing arguments");
+		save_exit_error("StartupFailure", "Failed parsing arguments");
 	}
 	handle_exit();
 }
@@ -1597,8 +1599,6 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 
 	setup_crash_reporting();
 
-	callbacks_impl cb_impl(hInstance, nCmdShow);
-
 	MultiByteCommandLine command_line;
 
 	update_completed = su_parse_command_line(command_line.argc(), command_line.argv(), &params);
@@ -1607,6 +1607,18 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		exit_on_init_fail(command_line);
 		return 0;
 	}
+
+	std::optional<callbacks_impl> cb_impl_storage;
+	try {
+		cb_impl_storage.emplace(hInstance, nCmdShow);
+	} catch (const std::exception &e) {
+		log_error("Updater UI initialization failed: %s", e.what());
+		save_exit_error("StartupFailure", "Failed to render UI");
+		handle_exit();
+		StartApplication(params.exec_no_update.c_str(), params.exec_cwd.c_str());
+		return 0;
+	}
+	callbacks_impl &cb_impl = *cb_impl_storage;
 
 	if (!cb_impl.prompt_user(params.version.c_str(), params.details.c_str())) {
 		//act as if we updated so app will be launched
@@ -1669,7 +1681,7 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 			}
 
 			if (cb_impl.should_start)
-				save_exit_error("Failed to autorestart");
+				save_exit_error("PostUpdateFailure", "Failed to autorestart");
 			handle_exit();
 		} else if (!cb_impl.should_start)
 			handle_exit();

@@ -24,10 +24,12 @@ const std::string protocol = "https";
 #else
 const std::string host = "sentry.io";
 const std::string protocol = "https";
-std::string last_error_type = "";
 //const std::string protocol = "1443";
 //const std::string host = "127.0.0.1";
 #endif
+
+std::string last_error_category = "";
+std::string last_error_reason = "";
 
 #if !defined(SENTRY_PROJECT_KEY) || !defined(SENTRY_PROJECT_ID)
 #error "sentry project info not provided"
@@ -97,10 +99,10 @@ std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std:
 		}
 		json_report << "	}]}, ";
 	} else if (!ExceptionInfo && minidump_result.size() == 0) {
-		json_report << "	\"exception\": [{";
-		json_report << "		\"type\": \"" << last_error_type << "\", ";
-		json_report << "		\"value\": \"" << last_error_type << "\" ";
-		json_report << "	}], ";
+		json_report << "	\"exception\": {\"values\":[{";
+		json_report << "		\"type\": \"" << last_error_category << "\", ";
+		json_report << "		\"value\": \"" << last_error_reason << "\" ";
+		json_report << "	}]}, ";
 	}
 	json_report << "	\"tags\": { ";
 	json_report << "		\"app_build_timestamp\": \"" << __DATE__ << " " << __TIME__ << "\", ";
@@ -524,9 +526,10 @@ void handle_exit() noexcept
 	send_crash_to_sentry_sync(report, false);
 }
 
-void save_exit_error(const std::string &error_type) noexcept
+void save_exit_error(const std::string &category, const std::string &reason) noexcept
 {
-	last_error_type = error_type;
+	last_error_category = category;
+	last_error_reason = reason;
 }
 
 void print_stacktrace_sym(CONTEXT *ctx, std::ostringstream &report_stream) noexcept
