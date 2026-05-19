@@ -271,16 +271,33 @@ async function generate_server_dir(testinfo) {
       fallbackVersion: testinfo.fallbackVersion,
       forceUpdate: false,
       details:
-        "Release Notes:\n\n" +
+        "Pretendlabs Desktop — Release Summary\n" +
+        "Covers all changes since v1.20.5.999-rc7-final-v3-actually-final\n\n" +
+        "This release upgrades the off-by-one count to zero and brings a broad set of refactors that nobody asked for.\n\n" +
         "#features\n" +
-        "- Preview build for early testing.\n" +
-        "- Introduces experimental feature flags.\n\n" +
+        "- New AI assistant that confidently writes O(n^3) sorting algorithms and calls them 'innovative'.\n" +
+        "- Added Quantum Debug Mode: when observed the bug disappears, when ignored it ships to production.\n" +
+        "- Introduced Schrodinger's Settings panel — your preferences are both saved and not saved until you reopen the app.\n" +
+        "- New Heisenberg Audio Mixer: you can know either the bitrate or the sample rate, never both.\n" +
+        "- Replaced legacy boolean with a tri-state truth value: true, false, and 'depends on the intern'.\n" +
+        "- Added '// TODO: handle this case' in 47 critical paths so you can finally sleep at night.\n" +
+        "- New Bikeshed Theme Editor lets your team argue for six weeks about whether the export button should be 4px or 5px tall.\n" +
+        "- Hot-loaded blockchain-AI-quantum-ML buzzword pipeline, currently powered by a single regex and prayer.\n\n" +
         "#generalfixes\n" +
-        "- Improves core-engine performance under load.\n" +
-        "- Fixes assorted stability and memory-leak issues found in 1.18.x.\n\n" +
+        "- Fixed the off-by-one error introduced when fixing the previous off-by-one error.\n" +
+        "- Resolved a race condition in the race-condition handler; handlers now finish in roughly the order they were spawned.\n" +
+        "- Plugged 12 of the 14 known memory leaks; the other two have full benefits and their own parking spots.\n" +
+        "- Cache invalidation now correctly invalidates exactly the items that were not changed.\n" +
+        "- Tabs and spaces now coexist peacefully thanks to a new shared therapist process called clang-mediator.\n" +
+        "- Fixed undefined behavior on Tuesdays. Wednesdays remain implementation-defined.\n" +
+        "- Replaced 200 lines of 'we will refactor this later' with a single 800-line method called doTheThing().\n" +
+        "- The build is no longer reproducible, but it is reproducibly unreproducible, which we are counting as a win.\n\n" +
         "#hotfixes\n" +
-        "- Updates documentation and localization assets.\n\n" +
-        "Build date: 2025.05.13.",
+        "- Reverted the revert that reverted the original revert; net change: a confused git history and one new co-author.\n" +
+        "- Fixed a NullPointerException that the comment directly above it explicitly said could never happen.\n" +
+        "- Patched a stack overflow in the recursion documentation; see the recursion documentation for details.\n" +
+        "- Hardcoded the build date so it is no longer a Heisenbug.\n\n" +
+        "Build date: roughly Tuesday-ish.",
     };
     fse.writeJsonSync(jsonfile, jsoncontent, { spaces: 2 });
   } else if (testinfo.version_details == "empty") {

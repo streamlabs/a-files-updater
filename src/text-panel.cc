@@ -70,6 +70,7 @@ void text_panel::measure(HDC hdc, int max_width)
 void text_panel::set_position(int x, int y, int w, int h)
 {
 	SetWindowPos(hwnd_, 0, x, y, w, h, SWP_ASYNCWINDOWPOS);
+	ShowScrollBar(hwnd_, SB_VERT, rect_.bottom > h ? TRUE : FALSE);
 }
 
 void text_panel::set_font(HFONT font)
@@ -80,11 +81,6 @@ void text_panel::set_font(HFONT font)
 LRESULT CALLBACK text_panel::subclass_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	switch (msg) {
-	case WM_PAINT: {
-		InvalidateRect(hwnd, NULL, true);
-	} break;
-	case WM_HSCROLL:
-	case WM_VSCROLL:
 	case WM_SETTEXT: {
 		RECT rect;
 		HWND parent = GetParent(hwnd);
