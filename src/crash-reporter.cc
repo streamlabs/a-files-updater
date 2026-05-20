@@ -528,8 +528,12 @@ void handle_exit() noexcept
 
 void save_exit_error(const std::string &category, const std::string &reason) noexcept
 {
-	last_error_category = category;
-	last_error_reason = reason;
+	try {
+		last_error_category = category;
+		last_error_reason = reason;
+	} catch (...) {
+		// best effort; nothing to do if we can't even copy a string
+	}
 }
 
 void print_stacktrace_sym(CONTEXT *ctx, std::ostringstream &report_stream) noexcept

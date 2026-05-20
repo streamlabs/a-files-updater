@@ -260,11 +260,12 @@ callbacks_impl::callbacks_impl(HINSTANCE hInstance, int nCmdShow)
 
 	/* FIXME: This feels a little dirty */
 	auto do_fail = [this](const std::string &user_msg, LPCWSTR context_msg) {
+		DWORD err = GetLastError();
 		if (this->frame)
 			DestroyWindow(this->frame);
 		ShowError(user_msg);
 		LogLastError(context_msg);
-		throw std::runtime_error("");
+		throw std::runtime_error(fmt::format("{} failed (error {})", ConvertToUtf8(context_msg), err));
 	};
 
 	int init_w = ScaleDPI(width, current_dpi);
@@ -1612,7 +1613,8 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	try {
 		cb_impl_storage.emplace(hInstance, nCmdShow);
 	} catch (const std::exception &e) {
-		log_error("Updater UI initialization failed: %s", e.what());
+		const char *what = e.what();
+		log_error("Updater UI initialization failed: %s", (what && *what) ? what : "<no message>");
 		save_exit_error("StartupFailure", "Failed to render UI");
 		handle_exit();
 		StartApplication(params.exec_no_update.c_str(), params.exec_cwd.c_str());
