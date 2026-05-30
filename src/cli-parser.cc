@@ -231,10 +231,9 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		print_arg_table(arg_table, arg_table_types, arg_table_sz);
 
 	//if missing 'details' param ignore it
-	if (num_errors == 1)
-	{
+	if (num_errors == 1 && end_arg->parent) {
 		arg_str *parent = (arg_str *)end_arg->parent[0];
-		if (strcmp(parent->hdr.shortopts, "d") == 0)
+		if (parent && parent->hdr.shortopts && strcmp(parent->hdr.shortopts, "d") == 0)
 			num_errors = 0;
 	}
 

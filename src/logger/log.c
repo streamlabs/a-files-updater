@@ -97,7 +97,7 @@ void log_log(int level, const char *file, int line, const char *fmt, ...)
 	if (!L.quiet) {
 		va_list args;
 		char buf[16];
-		buf[strftime(buf, sizeof(buf), "%H:%M:%S", lt)] = '\0';
+		buf[lt ? strftime(buf, sizeof(buf), "%H:%M:%S", lt) : 0] = '\0';
 #ifdef LOG_USE_COLOR
 		fprintf(stderr, "%s %s%-5s\x1b[0m \x1b[90m%s:%d:\x1b[0m ", buf, level_colors[level], level_names[level], file, line);
 #else
@@ -114,7 +114,7 @@ void log_log(int level, const char *file, int line, const char *fmt, ...)
 	if (L.fp) {
 		va_list args;
 		char buf[32];
-		buf[strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", lt)] = '\0';
+		buf[lt ? strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", lt) : 0] = '\0';
 		fprintf(L.fp, "%s %-5s %s:%d: ", buf, level_names[level], file, line);
 		va_start(args, fmt);
 		vfprintf(L.fp, fmt, args);
@@ -144,7 +144,7 @@ void wlog_log(int level, const char *file, int line, const wchar_t *fmt, ...)
 	if (!L.quiet) {
 		va_list args;
 		wchar_t buf[16];
-		buf[wcsftime(buf, sizeof(buf), L"%H:%M:%S", lt)] = L'\0';
+		buf[lt ? wcsftime(buf, sizeof(buf) / sizeof(buf[0]), L"%H:%M:%S", lt) : 0] = L'\0';
 #ifdef LOG_USE_COLOR
 		fwprintf(stderr, L"%s %s%-5s\x1b[0m \x1b[90m%S:%d:\x1b[0m ", buf, level_colors[level], level_names[level], file, line);
 #else
@@ -161,7 +161,7 @@ void wlog_log(int level, const char *file, int line, const wchar_t *fmt, ...)
 	if (L.fp) {
 		va_list args;
 		wchar_t buf[32];
-		buf[wcsftime(buf, sizeof(buf), L"%Y-%m-%d %H:%M:%S", lt)] = L'\0';
+		buf[lt ? wcsftime(buf, sizeof(buf) / sizeof(buf[0]), L"%Y-%m-%d %H:%M:%S", lt) : 0] = L'\0';
 		fwprintf(L.fp, L"%s %-5S %S:%d: ", buf, level_names[level], file, line);
 		va_start(args, fmt);
 		vfwprintf(L.fp, fmt, args);
