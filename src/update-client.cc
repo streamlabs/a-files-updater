@@ -76,12 +76,12 @@ void update_client::start_file_update()
 		if (reverted) {
 			client_events->error(
 				boost::locale::translate("Failed to move files.\nPlease make sure the application files are not in use and try again."),
-				"Failed to update");
+				"UpdateFailure", "Failed to update");
 		} else {
 			client_events->error(
 				boost::locale::translate(
 					"The automatic update failed to perform successfully.\nPlease install the latest version of Streamlabs Desktop from https://streamlabs.com/"),
-				"Failed to revert on fail");
+				"UpdateFailure", "Failed to revert on fail");
 		}
 	}
 }
@@ -144,7 +144,7 @@ void update_client::handle_network_error(const boost::system::error_code &error,
 	std::string error_str = boost::locale::translate(
 		"Streamlabs Desktop was unable to download the update and will launch the current version instead.\n\nThe update will try again later. If this issue persists then please download a new installer from www.streamlabs.com");
 	snprintf(error_buf, sizeof(error_buf), "%s\0", error_str.c_str());
-	client_events->error(error_buf, "Network error");
+	client_events->error(error_buf, "UpdateFailure", "Network error");
 
 	snprintf(error_buf, sizeof(error_buf), "%s - %s\0", str.c_str(), error.message().c_str());
 	log_error(error_buf);
@@ -369,7 +369,7 @@ void update_client::do_stuff()
 
 	if (!check_disk_space()) {
 		log_fatal("Update canceled during disk space check.");
-		client_events->error(boost::locale::translate("Update canceled during disk space check."), "Canceled");
+		client_events->error(boost::locale::translate("Update canceled during disk space check."), "UserAction", "Canceled");
 		reset_work_threads_guards();
 		return;
 	}
@@ -801,7 +801,7 @@ void update_client::process_manifest_results()
 				break;
 			case 2: {
 				log_info("Got cancel command from ui on virtualcam blocker");
-				client_events->error(boost::locale::translate("Update was canceled."), "Canceled");
+				client_events->error(boost::locale::translate("Update was canceled."), "UserAction", "Canceled");
 				reset_work_threads_guards();
 				return;
 			} break;
@@ -865,7 +865,7 @@ void update_client::process_manifest_results()
 				break;
 			case 2: {
 				log_info("Got cancel command from ui on blocker");
-				client_events->error(boost::locale::translate("Update was canceled."), "Canceled");
+				client_events->error(boost::locale::translate("Update was canceled."), "UserAction", "Canceled");
 				reset_work_threads_guards();
 				return;
 			} break;
@@ -885,25 +885,25 @@ void update_client::process_manifest_results()
 		client_events->error(
 			boost::locale::translate(
 				"Failed to move files.\nSome files may be blocked by other program. Please restart your PC and try to update again."),
-			"File access error");
+			"UpdateFailure", "File access error");
 		return;
 	} catch (update_exception_failed &) {
 		client_events->error(
 			boost::locale::translate(
 				"Failed to move files.\nSome files could not be updated. Please download Streamlabs Desktop installer from our site and run full installation."),
-			"File access error");
+			"UpdateFailure", "File access error");
 		return;
 	} catch (std::exception &) {
 		client_events->error(
 			boost::locale::translate(
 				"Failed to move files.\nSome files could not be updated. Please download Streamlabs Desktop installer from our site and run full installation."),
-			"File operation error");
+			"UpdateFailure", "File operation error");
 		return;
 	} catch (...) {
 		client_events->error(
 			boost::locale::translate(
 				"Failed to move files.\nSome files could not be updated. Please download Streamlabs Desktop installer from our site and run full installation."),
-			"File operation error");
+			"UpdateFailure", "File operation error");
 		return;
 	}
 

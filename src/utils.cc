@@ -223,7 +223,7 @@ fs::path prepare_file_path(const fs::path &base, const std::string &target)
 		fs::remove(file_path);
 	} catch (fs::filesystem_error const &ex) {
 		log_error("Creating a file path failed. Error %s", ex.what());
-		log_error("Info: %s and %s", base.string().c_str(), target.c_str());
+		log_error("Info: %s and %s", base.u8string().c_str(), target.c_str());
 		file_path = "";
 	} catch (...) {
 		log_error("Creating a file path failed for %s", target.c_str());
