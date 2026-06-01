@@ -146,7 +146,7 @@ void wlog_log(int level, const char *file, int line, const wchar_t *fmt, ...)
 		wchar_t buf[16];
 		buf[lt ? wcsftime(buf, sizeof(buf) / sizeof(buf[0]), L"%H:%M:%S", lt) : 0] = L'\0';
 #ifdef LOG_USE_COLOR
-		fwprintf(stderr, L"%s %s%-5s\x1b[0m \x1b[90m%S:%d:\x1b[0m ", buf, level_colors[level], level_names[level], file, line);
+		fwprintf(stderr, L"%s %S%-5S\x1b[0m \x1b[90m%S:%d:\x1b[0m ", buf, level_colors[level], level_names[level], file, line);
 #else
 		fwprintf(stderr, L"%s %-5S %S:%d: ", buf, level_names[level], file, line);
 #endif
