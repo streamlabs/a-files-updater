@@ -116,6 +116,7 @@ struct callbacks_impl : public install_callbacks,
 	HWND kill_button{NULL};
 	HWND continue_button{NULL};
 	HWND cancel_button{NULL};
+	struct update_client *client_ptr{NULL};
 	std::wstring update_btn_label;
 	std::wstring remind_btn_label;
 	std::wstring continue_label;
@@ -149,6 +150,8 @@ struct callbacks_impl : public install_callbacks,
 	bool finished_downloading{false};
 	bool prompting{false};
 	bool cancel_silent{false};
+	bool package_phase_active{false};
+	std::wstring saved_cancel_label;
 	LPCWSTR label_format{L"Downloading {} of {} - {:.2f} MB/s"};
 
 	callbacks_impl(const callbacks_impl &) = delete;
@@ -161,6 +164,7 @@ struct callbacks_impl : public install_callbacks,
 
 	void setupFont();
 	void repostionUI();
+	void restore_cancel_button_text();
 
 	void initialize(struct update_client *client) final;
 	void success() final;
@@ -563,12 +567,14 @@ void callbacks_impl::initialize(struct update_client *client)
 
 void callbacks_impl::success()
 {
+	restore_cancel_button_text();
 	should_start = true;
 	PostMessage(frame, CUSTOM_CLOSE_MSG, NULL, NULL);
 }
 
 void callbacks_impl::error(const std::string &error, const std::string &category, const std::string &reason)
 {
+	restore_cancel_button_text();
 	this->error_buf = error;
 	save_exit_error(category, reason);
 
@@ -583,6 +589,8 @@ void callbacks_impl::downloader_preparing(bool connected)
 	if (ctx->prompting) {
 		return;
 	}
+
+	ctx->restore_cancel_button_text();
 
 	std::wstring checking_label;
 	if (connected) {
@@ -714,7 +722,8 @@ void callbacks_impl::installer_download_start(const std::string &packageName)
 {
 	package_dl_pct100 = 0;
 	installer_download_progress(0);
-	std::wstring downloading_label = ConvertToUtf16WS(boost::locale::translate("Downloading"));
+
+	std::wstring downloading_label = ConvertToUtf16WS(boost::locale::translate("Downloading required component: "));
 	downloading_label += fmt::to_wstring(packageName) + L"...";
 
 	HDC hdc = GetDC(frame);
@@ -728,14 +737,25 @@ void callbacks_impl::installer_download_start(const std::string &packageName)
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
 
+	package_phase_active = true;
+	saved_cancel_label = cancel_label;
+	cancel_label = ConvertToUtf16WS(boost::locale::translate("Skip"));
+	SetWindowTextW(cancel_button, cancel_label.c_str());
+
+	ShowWindow(cancel_button, SW_SHOW);
+	ShowWindow(continue_button, SW_HIDE);
+	ShowWindow(kill_button, SW_HIDE);
+	ShowWindow(progress_worker, SW_SHOW);
+
 	repostionUI();
 
 	SetWindowTextW(progress_label, downloading_label.c_str());
+
+	log_info("Package download/install UI shown for: %s", packageName.c_str());
 }
 
 void callbacks_impl::installer_download_progress(const double percent)
 {
-	// Too many PostMessage per/sec overwhelm gui refresh rate
 	int pct100 = int(percent * 100.0);
 
 	if (pct100 > package_dl_pct100) {
@@ -746,6 +766,8 @@ void callbacks_impl::installer_download_progress(const double percent)
 
 void callbacks_impl::installer_package_failed(const std::string &packageName, const std::string &message)
 {
+	restore_cancel_button_text();
+
 	if (message.empty())
 		MessageBoxA(frame, ("WARNING: Streamlabs Desktop was unable to download/install the required '" + packageName + "' package.").c_str(),
 			    "Package Installation", MB_OK | MB_ICONWARNING);
@@ -773,6 +795,8 @@ void callbacks_impl::installer_run_file(const std::string &packageName, const st
 	}
 
 	if (dwExitCode == ERROR_SUCCESS) {
+		log_info("Launching package installer for \"%s\" with params: %s", packageName.c_str(), startParams.c_str());
+
 		STARTUPINFOA si;
 		ZeroMemory(&si, sizeof(si));
 		si.cb = sizeof(si);
@@ -784,6 +808,8 @@ void callbacks_impl::installer_run_file(const std::string &packageName, const st
 				   &pi)) {
 			WaitForSingleObject(pi.hProcess, INFINITE);
 			GetExitCodeProcess(pi.hProcess, &dwExitCode);
+
+			log_info("Package installer for \"%s\" exited with code %lu", packageName.c_str(), dwExitCode);
 
 			CloseHandle(pi.hProcess);
 			CloseHandle(pi.hThread);
@@ -1067,6 +1093,18 @@ void callbacks_impl::reset_ui_labels()
 	remind_btn_label = ConvertToUtf16WS(boost::locale::translate("Later"));
 	trim_trailing_nuls(update_btn_label);
 	trim_trailing_nuls(remind_btn_label);
+}
+
+void callbacks_impl::restore_cancel_button_text()
+{
+	if (!saved_cancel_label.empty()) {
+		cancel_label = saved_cancel_label;
+		saved_cancel_label.clear();
+	}
+	package_phase_active = false;
+	if (cancel_button != NULL) {
+		SetWindowTextW(cancel_button, cancel_label.c_str());
+	}
 }
 
 bool callbacks_impl::run_message_loop(bool default_accept)
@@ -1429,7 +1467,14 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			EnableWindow(ctx->continue_button, false);
 			EnableWindow(ctx->cancel_button, false);
 			ctx->cancel_silent = true;
-			ctx->should_cancel = true;
+			if (ctx->package_phase_active) {
+				ctx->restore_cancel_button_text();
+			} else {
+				ctx->should_cancel = true;
+			}
+			if (ctx->client_ptr) {
+				update_client_cancel_install_packages(ctx->client_ptr);
+			}
 			break;
 		}
 	} break;
@@ -1647,10 +1692,10 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		update_client_set_disk_space_events(client.get(), &cb_impl);
 		update_client_set_installer_events(client.get(), &cb_impl);
 
+		cb_impl.client_ptr = client.get();
 		cb_impl.initialize(client.get());
 
 		std::thread workerThread([&]() {
-			// Threaded because package installations come first which is blocking from the perspective of the file updater
 			update_client_start(client.get());
 		});
 

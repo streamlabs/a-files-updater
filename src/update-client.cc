@@ -4,6 +4,8 @@
 #include <thread>
 #include <regex>
 
+#include <winsock2.h>
+
 
 
 #include <fmt/format.h>
@@ -263,7 +265,7 @@ void update_client::handle_resolve(const boost::system::error_code &error, resol
 }
 
 update_client::update_client(struct update_parameters *params)
-	: params(params), wait_for_blockers(io_ctx), show_user_blockers_list(true), active_workers(0), resolver(io_ctx), domain_resolve_timeout(io_ctx)
+	: params(params), wait_for_blockers(io_ctx), show_user_blockers_list(true), active_workers(0), resolver(io_ctx), domain_resolve_timeout(io_ctx), package_download_timer(io_ctx)
 {
 	new_files_dir = params->temp_dir;
 	new_files_dir /= "new-files";
@@ -307,6 +309,16 @@ void update_client::flush()
 	for (std::thread &thrd : thread_pool) {
 		thrd.join();
 	}
+}
+
+void update_client::cancel_install_packages()
+{
+	install_packages_cancelled = true;
+	uintptr_t s = active_package_native_socket.exchange(~uintptr_t(0));
+	if (s != ~uintptr_t(0)) {
+		::closesocket((SOCKET)s);
+	}
+	package_download_timer.cancel();
 }
 
 bool update_client::check_disk_space()
@@ -374,9 +386,15 @@ void update_client::do_stuff()
 		return;
 	}
 
-	// [packageName] = { url, params }
-	for (auto &itr : install_packages)
+	for (auto &itr : install_packages) {
 		install_package(itr.first, itr.second.first, itr.second.second);
+		log_info("Finished processing package \"%s\".", itr.first.c_str());
+	}
+
+	if (install_packages_cancelled) {
+		log_info("Package installation was skipped (user chose Skip or was cancelled). Continuing with main update.");
+		install_packages_cancelled = false;
+	}
 
 	domain_resolve_timeout.expires_from_now(boost::posix_time::seconds(10));
 	check_resolve_timeout_callback_err({});
@@ -392,10 +410,11 @@ void update_client::install_package(const std::string &packageName, std::string 
 {
 	installer_events->installer_download_start(packageName);
 
+	log_info("Starting package download/install for \"%s\" (from %s)", packageName.c_str(), url.c_str());
+
 	boost::system::error_code error;
 	boost::asio::io_service io_service;
 
-	// Deduce domain from url
 	std::string domainName;
 	boost::replace_all(url, "https://", "");
 	boost::replace_all(url, "http://", "");
@@ -407,7 +426,6 @@ void update_client::install_package(const std::string &packageName, std::string 
 		domainName.push_back(url[itr]);
 	}
 
-	// Resolve domain to IP
 	tcp::resolver local_resolver(io_service);
 	tcp::resolver::iterator endpoint_iterator = local_resolver.resolve(
 		tcp::resolver::query{
@@ -421,8 +439,26 @@ void update_client::install_package(const std::string &packageName, std::string 
 		return;
 	}
 
-	// Try connect each endpoint until success
 	ssl::stream<tcp::socket> local_ssl_socket(io_ctx, ssl_context);
+
+	active_package_native_socket.store((uintptr_t)local_ssl_socket.lowest_layer().native_handle());
+
+	package_download_timer.expires_from_now(boost::posix_time::seconds(180));
+	package_download_timer.async_wait([this, packageName, h = (uintptr_t)local_ssl_socket.lowest_layer().native_handle()](const boost::system::error_code &ec) {
+		if (ec)
+			return;
+		log_warn("Timeout for package %s download/install", packageName.c_str());
+		uintptr_t cur = active_package_native_socket.load();
+		if (cur == h) {
+			::closesocket((SOCKET)h);
+			active_package_native_socket.store(~uintptr_t(0));
+		}
+	});
+
+	auto finish_package = [&]() {
+		package_download_timer.cancel();
+		active_package_native_socket.store(~uintptr_t(0));
+	};
 
 	do {
 		local_ssl_socket.lowest_layer().close();
@@ -430,30 +466,35 @@ void update_client::install_package(const std::string &packageName, std::string 
 	} while (error && endpoint_iterator != tcp::resolver::iterator{});
 
 	if (error.failed()) {
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "HTTP(2) " + error.message());
 		return;
 	}
 
-	// Timeout - Not 3 seconds to get everything, the max duration to go without back/forth activity
 	int32_t timeout = 3000;
 	::setsockopt(local_ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
 	::setsockopt(local_ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
 
-	// Set SNI hostname for TLS - required for CloudFlare and other CDNs
 	if (!SSL_set_tlsext_host_name(local_ssl_socket.native_handle(), domainName.c_str())) {
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "HTTP(2.5) Failed to set SNI hostname");
 		return;
 	}
 
-	// Handshake
 	local_ssl_socket.handshake(ssl::stream_base::handshake_type::client, error);
 
 	if (error.failed()) {
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "HTTP(3) " + error.message());
 		return;
 	}
 
-	// Send the first request
 	http::request<http::empty_body> local_request;
 	std::string target = url.substr(domainName.length());
 	if (target.empty())
@@ -467,22 +508,30 @@ void update_client::install_package(const std::string &packageName, std::string 
 	http::write(local_ssl_socket, local_request, error);
 
 	if (error.failed()) {
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "HTTP(4) " + error.message());
 		return;
 	}
 
-	// Check that response is OK
 	beast::multi_buffer local_response_buf;
 	http::response_parser<http::dynamic_body> local_response_parser;
 	local_response_parser.body_limit(std::numeric_limits<unsigned long long>::max());
 	http::read_header(local_ssl_socket, local_response_buf, local_response_parser, error);
 
 	if (error.failed()) {
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "HTTP(5) " + error.message());
 		return;
 	}
 
 	if (local_response_parser.get().result_int() != 200) {
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "HTTP Status Code " + std::to_string(local_response_parser.get().result_int()));
 		return;
 	}
@@ -493,13 +542,18 @@ void update_client::install_package(const std::string &packageName, std::string 
 	} catch (...) {
 	}
 
-	if (content_length == 0)
+	if (content_length == 0) {
+		finish_package();
 		return;
+	}
 
 	do {
 		try {
 			http::read_some(local_ssl_socket, local_response_buf, local_response_parser, error);
 		} catch (const boost::system::system_error &ex) {
+			finish_package();
+			if (install_packages_cancelled)
+				return;
 			installer_events->installer_package_failed(packageName, "HTTP(6) " + ex.code().message());
 			return;
 		}
@@ -508,6 +562,9 @@ void update_client::install_package(const std::string &packageName, std::string 
 	} while (!error.failed() && !local_response_parser.is_done());
 
 	if (error.failed()) {
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "HTTP(7) " + error.message());
 		return;
 	}
@@ -515,9 +572,15 @@ void update_client::install_package(const std::string &packageName, std::string 
 	try {
 		installer_events->installer_run_file(packageName, startParams, beast::buffers_to_string(local_response_parser.get().body().data()));
 	} catch (...) {
-		// local_response_parser throws
+		finish_package();
+		if (install_packages_cancelled)
+			return;
 		installer_events->installer_package_failed(packageName, "Unknown Error");
+		return;
 	}
+
+	log_info("Package \"%s\" download and execution completed.", packageName.c_str());
+	finish_package();
 }
 
 void update_client::set_endpoint_fail(const std::string &used_cdn_node_address)
@@ -1298,5 +1361,10 @@ void update_client_start(struct update_client *client)
 void update_client_flush(struct update_client *client)
 {
 	client->flush();
+}
+
+void update_client_cancel_install_packages(struct update_client *client)
+{
+	client->cancel_install_packages();
 }
 }
