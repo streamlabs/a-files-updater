@@ -12,19 +12,40 @@ on:
 
 jobs:
   clang-format-check:
-    runs-on: ubuntu-22.04
+    runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: 'recursive'
 
-      - name: Install clang format
+      - name: Ensure clang-format is on PATH (pre-installed via VS LLVM component)
         run: |
-          sudo apt-get install -y clang-format-13
+          # GitHub Windows runners include LLVM/clang tools via the Visual Studio workload.
+          # We just need to make sure the bin dir is in PATH.
+          $vsLlvm = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin"
+          if (Test-Path $vsLlvm) {
+            echo $vsLlvm >> $env:GITHUB_PATH
+            Write-Host "Added VS LLVM bin to PATH: $vsLlvm"
+          } else {
+            # Fallbacks for other VS editions or standalone LLVM
+            $fallbacks = @(
+              "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin",
+              "C:\Program Files\LLVM\bin"
+            )
+            foreach ($p in $fallbacks) {
+              if (Test-Path $p) {
+                echo $p >> $env:GITHUB_PATH
+                Write-Host "Added fallback to PATH: $p"
+                break
+              }
+            }
+          }
 
       - name: 'Run clang-format'
         run: |
-          ./ci/check-format.sh
-          ./ci/check-changes.sh
+          clang-format --version
+          ./ci/check-format.ps1
+          ./ci/check-changes.ps1
+        shell: pwsh
 

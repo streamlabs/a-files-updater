@@ -14,8 +14,7 @@ public:
 			  boost::iostreams::input,
 			  boost::iostreams::filter_tag,
 			  boost::iostreams::multichar_tag,
-			  boost::iostreams::closable_tag {
-	};
+			  boost::iostreams::closable_tag {};
 
 	/* FIXME TODO Signal that errors happened somehow */
 	sha256_filter() { SHA256_Init(&hasher); }
