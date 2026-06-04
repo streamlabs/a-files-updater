@@ -314,11 +314,12 @@ void update_client::flush()
 void update_client::cancel_install_packages()
 {
 	install_packages_cancelled = true;
+	// UI thread must not touch the asio timer; finish_package cancels it on the worker
+	// thread once the closed socket unblocks the synchronous op.
 	uintptr_t s = active_package_native_socket.exchange(~uintptr_t(0));
 	if (s != ~uintptr_t(0)) {
 		::closesocket((SOCKET)s);
 	}
-	package_download_timer.cancel();
 }
 
 bool update_client::check_disk_space()
@@ -447,10 +448,12 @@ void update_client::install_package(const std::string &packageName, std::string 
 	package_download_timer.async_wait([this, packageName](const boost::system::error_code &ec) {
 		if (ec)
 			return;
-		log_warn("Timeout for package %s download/install", packageName.c_str());
+		// Act only if the handle is still live - Skip/normal completion may have swapped it out.
 		uintptr_t s = active_package_native_socket.exchange(~uintptr_t(0));
-		if (s != ~uintptr_t(0))
+		if (s != ~uintptr_t(0)) {
+			log_warn("Timeout for package %s download/install", packageName.c_str());
 			::closesocket((SOCKET)s);
+		}
 	});
 
 	auto finish_package = [&]() {
@@ -466,6 +469,8 @@ void update_client::install_package(const std::string &packageName, std::string 
 		if (error.failed())
 			continue;
 
+		// Force-closed out-of-band by Skip/timeout to interrupt the blocking ops below;
+		// safe here because no other socket is opened on io_ctx during the package phase.
 		active_package_native_socket.store((uintptr_t)local_ssl_socket.lowest_layer().native_handle());
 
 		local_ssl_socket.lowest_layer().connect(*endpoint_iterator, error);

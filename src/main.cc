@@ -16,6 +16,7 @@
 #include "blocker-panel.hpp"
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <fstream>
@@ -152,6 +153,9 @@ struct callbacks_impl : public install_callbacks,
 	bool cancel_silent{false};
 	bool package_phase_active{false};
 	std::wstring saved_cancel_label;
+	// Guards cancel_label/saved_cancel_label/package_phase_active (worker vs UI thread).
+	// Never hold across SetWindowTextW - it SendMessages the UI thread and would deadlock.
+	std::mutex cancel_label_mutex;
 	LPCWSTR label_format{L"Downloading {} of {} - {:.2f} MB/s"};
 
 	callbacks_impl(const callbacks_impl &) = delete;
@@ -737,10 +741,14 @@ void callbacks_impl::installer_download_start(const std::string &packageName)
 	SelectObject(hdc, hfontOld);
 	ReleaseDC(frame, hdc);
 
-	package_phase_active = true;
-	saved_cancel_label = cancel_label;
-	cancel_label = ConvertToUtf16WS(boost::locale::translate("Skip"));
-	SetWindowTextW(cancel_button, cancel_label.c_str());
+	std::wstring skip_label = ConvertToUtf16WS(boost::locale::translate("Skip"));
+	{
+		std::lock_guard<std::mutex> lock(cancel_label_mutex);
+		package_phase_active = true;
+		saved_cancel_label = cancel_label;
+		cancel_label = skip_label;
+	}
+	SetWindowTextW(cancel_button, skip_label.c_str());
 
 	ShowWindow(cancel_button, SW_SHOW);
 	ShowWindow(continue_button, SW_HIDE);
@@ -1086,8 +1094,13 @@ void callbacks_impl::hide_ui_elements()
 
 void callbacks_impl::reset_ui_labels()
 {
+	std::wstring cancel_copy;
+	{
+		std::lock_guard<std::mutex> lock(cancel_label_mutex);
+		cancel_copy = cancel_label;
+	}
 	SetWindowTextW(continue_button, continue_label.c_str());
-	SetWindowTextW(cancel_button, cancel_label.c_str());
+	SetWindowTextW(cancel_button, cancel_copy.c_str());
 
 	update_btn_label = ConvertToUtf16WS(boost::locale::translate("Upgrade"));
 	remind_btn_label = ConvertToUtf16WS(boost::locale::translate("Later"));
@@ -1097,13 +1110,18 @@ void callbacks_impl::reset_ui_labels()
 
 void callbacks_impl::restore_cancel_button_text()
 {
-	if (!saved_cancel_label.empty()) {
-		cancel_label = saved_cancel_label;
-		saved_cancel_label.clear();
+	std::wstring to_set;
+	{
+		std::lock_guard<std::mutex> lock(cancel_label_mutex);
+		if (!saved_cancel_label.empty()) {
+			cancel_label = saved_cancel_label;
+			saved_cancel_label.clear();
+		}
+		package_phase_active = false;
+		to_set = cancel_label;
 	}
-	package_phase_active = false;
 	if (cancel_button != NULL) {
-		SetWindowTextW(cancel_button, cancel_label.c_str());
+		SetWindowTextW(cancel_button, to_set.c_str());
 	}
 }
 
@@ -1466,7 +1484,12 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			EnableWindow(ctx->kill_button, false);
 			EnableWindow(ctx->continue_button, false);
 			EnableWindow(ctx->cancel_button, false);
-			if (ctx->package_phase_active) {
+			bool in_package_phase;
+			{
+				std::lock_guard<std::mutex> lock(ctx->cancel_label_mutex);
+				in_package_phase = ctx->package_phase_active;
+			}
+			if (in_package_phase) {
 				ctx->restore_cancel_button_text();
 			} else {
 				ctx->cancel_silent = true;
@@ -1539,7 +1562,12 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			if (ctx->prompting) {
 				DrawText(dis->hDC, ctx->remind_btn_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			} else {
-				DrawText(dis->hDC, ctx->cancel_label.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				std::wstring cancel_copy;
+				{
+					std::lock_guard<std::mutex> lock(ctx->cancel_label_mutex);
+					cancel_copy = ctx->cancel_label;
+				}
+				DrawText(dis->hDC, cancel_copy.c_str(), -1, &dis->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			}
 		}
 		if (dis->hwndItem == ctx->kill_button) {
