@@ -105,7 +105,7 @@ struct update_client {
 	bool show_user_blockers_list;
 	std::wstring process_list_text;
 
-	bool install_packages_cancelled = false;
+	std::atomic<bool> install_packages_cancelled{false};
 	boost::asio::deadline_timer package_download_timer;
 	std::atomic<uintptr_t> active_package_native_socket{~uintptr_t(0)};
 

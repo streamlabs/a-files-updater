@@ -389,6 +389,8 @@ void update_client::do_stuff()
 	for (auto &itr : install_packages) {
 		install_package(itr.first, itr.second.first, itr.second.second);
 		log_info("Finished processing package \"%s\".", itr.first.c_str());
+		if (install_packages_cancelled)
+			break;
 	}
 
 	if (install_packages_cancelled) {
@@ -441,18 +443,14 @@ void update_client::install_package(const std::string &packageName, std::string 
 
 	ssl::stream<tcp::socket> local_ssl_socket(io_ctx, ssl_context);
 
-	active_package_native_socket.store((uintptr_t)local_ssl_socket.lowest_layer().native_handle());
-
 	package_download_timer.expires_from_now(boost::posix_time::seconds(180));
-	package_download_timer.async_wait([this, packageName, h = (uintptr_t)local_ssl_socket.lowest_layer().native_handle()](const boost::system::error_code &ec) {
+	package_download_timer.async_wait([this, packageName](const boost::system::error_code &ec) {
 		if (ec)
 			return;
 		log_warn("Timeout for package %s download/install", packageName.c_str());
-		uintptr_t cur = active_package_native_socket.load();
-		if (cur == h) {
-			::closesocket((SOCKET)h);
-			active_package_native_socket.store(~uintptr_t(0));
-		}
+		uintptr_t s = active_package_native_socket.exchange(~uintptr_t(0));
+		if (s != ~uintptr_t(0))
+			::closesocket((SOCKET)s);
 	});
 
 	auto finish_package = [&]() {
@@ -460,10 +458,20 @@ void update_client::install_package(const std::string &packageName, std::string 
 		active_package_native_socket.store(~uintptr_t(0));
 	};
 
-	do {
-		local_ssl_socket.lowest_layer().close();
-		local_ssl_socket.lowest_layer().connect(*endpoint_iterator++, error);
-	} while (error && endpoint_iterator != tcp::resolver::iterator{});
+	// Open before each connect so the live handle is published (for the timeout/Skip
+	// path to close) before the blocking connect - native_handle() is invalid until open.
+	for (; endpoint_iterator != tcp::resolver::iterator{}; ++endpoint_iterator) {
+		local_ssl_socket.lowest_layer().close(error);
+		local_ssl_socket.lowest_layer().open(endpoint_iterator->endpoint().protocol(), error);
+		if (error.failed())
+			continue;
+
+		active_package_native_socket.store((uintptr_t)local_ssl_socket.lowest_layer().native_handle());
+
+		local_ssl_socket.lowest_layer().connect(*endpoint_iterator, error);
+		if (!error.failed())
+			break;
+	}
 
 	if (error.failed()) {
 		finish_package();

@@ -1466,10 +1466,10 @@ LRESULT CALLBACK FrameWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			EnableWindow(ctx->kill_button, false);
 			EnableWindow(ctx->continue_button, false);
 			EnableWindow(ctx->cancel_button, false);
-			ctx->cancel_silent = true;
 			if (ctx->package_phase_active) {
 				ctx->restore_cancel_button_text();
 			} else {
+				ctx->cancel_silent = true;
 				ctx->should_cancel = true;
 			}
 			if (ctx->client_ptr) {
