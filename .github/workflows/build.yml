@@ -41,6 +41,12 @@ jobs:
           node-version: 16
       - name: Install dependencies
         run: yarn install --immutable --immutable-cache --check-cache
+      - name: Set up vcpkg (pinned to manifest baseline)
+        shell: cmd
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          git -C vcpkg checkout eb35a05cc21c69ec1399f7532b7dd61d271ac0d1
+          call vcpkg\bootstrap-vcpkg.bat -disableMetrics
       - name: Create vcpkg binary cache dir
         run: New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/vcpkg_cache"
         shell: pwsh
@@ -63,7 +69,7 @@ jobs:
           call "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Auxiliary/Build/vcvars64.bat" 
           cmake -H"${{ github.workspace }}" -B"build" -G"Visual Studio 17 2022" ^
           -DCMAKE_BUILD_TYPE=RelWithDebInfo -A x64 ^
-          -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%/scripts/buildsystems/vcpkg.cmake" ^
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" ^
           -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
           -DCMAKE_DEPS_DIR=${{env.DEPS_LOCAL_PATH}} ^
           -DCMAKE_INSTALL_PREFIX="build/distribute/a-file-updater"
