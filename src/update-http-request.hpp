@@ -73,7 +73,7 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 	void handle_result(update_file_t *file_ctx);
 
 	void start_connect();
-	void handle_connect(const boost::system::error_code &error, tcp::resolver::results_type::iterator ep);
+	void handle_connect(const boost::system::error_code &error);
 	void handle_handshake(const boost::system::error_code &error);
 	void handle_request(boost::system::error_code &error, size_t bytes);
 	void handle_response_header(boost::system::error_code &error, size_t bytes);
@@ -184,7 +184,7 @@ bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const b
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::start_connect()
 {
-	auto connect_handler = [this](auto e, auto b) { this->handle_connect(e, b); };
+	auto connect_handler = [this](auto e, auto) { this->handle_connect(e); };
 
 	switch_deadline_on();
 
@@ -209,7 +209,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 }
 
 template<class Body, bool IncludeVersion>
-void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error, tcp::resolver::results_type::iterator ep)
+void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error)
 {
 	if (handle_callback_precheck(error, "connect to host")) {
 		return;
