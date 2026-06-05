@@ -1112,6 +1112,9 @@ update_file_t::update_file_t(const fs::path &file_path) : file_path(file_path), 
 		/* TODO File failed to open here */
 	}
 
+	if (!this->checksum_filter.hasher)
+		log_warn("Failed to initialize SHA-256 context");
+
 	this->output_chain.push(boost::reference_wrapper<bio::gzip_decompressor>(this->decompress_filter), file_buffer_size);
 
 	this->output_chain.push(boost::reference_wrapper<sha256_filter>(this->checksum_filter), file_buffer_size);

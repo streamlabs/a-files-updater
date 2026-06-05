@@ -5,7 +5,6 @@
 #include <boost/iostreams/categories.hpp>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
-#include "logger/log.h"
 
 class sha256_filter {
 public:
@@ -22,10 +21,8 @@ public:
 	/* FIXME TODO Signal that errors happened somehow */
 	sha256_filter()
 	{
-		if (!hasher || EVP_DigestInit_ex(hasher.get(), EVP_sha256(), nullptr) != 1) {
-			log_warn("Failed to initialize SHA-256 filter context");
+		if (!hasher || EVP_DigestInit_ex(hasher.get(), EVP_sha256(), nullptr) != 1)
 			hasher.reset();
-		}
 	}
 
 	template<typename Sink> std::streamsize write(Sink &dest, const char *s, std::streamsize n)
