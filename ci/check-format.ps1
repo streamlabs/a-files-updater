@@ -1,12 +1,16 @@
 #!/usr/bin/env pwsh
+#requires -Version 7.0
 <#
 .SYNOPSIS
-    Runs clang-format on the codebase (Windows version).
+    Reformats the codebase in place with clang-format (Windows version).
     Based on the original bash script but adapted for Windows/PowerShell.
 
+    This script only formats. Run ci/check-changes.ps1 afterwards to detect
+    whether any files changed (that script exits 1 on a dirty working tree).
+
     Return codes:
-    - 1 there are files that needed formatting (or were reformatted and dirty)
-    - 0 everything looks fine
+    - 1 clang-format is missing or older than the required version
+    - 0 formatting ran
 
     Usage:
     ./ci/check-format.ps1          # normal
@@ -42,7 +46,8 @@ if (-not $CLANG_FORMAT) {
 
 $versionOutput = & $CLANG_FORMAT --version 2>&1 | Out-String
 if ($versionOutput -notmatch 'version (19|20|2[0-9])\.') {
-    Write-Warning "clang-format version may be older than expected (got: $($versionOutput.Trim())). Proceeding anyway."
+    Write-Error "clang-format 19 or later is required (got: $($versionOutput.Trim())). See .clang-format."
+    exit 1
 }
 
 Write-Host "Using clang-format: $CLANG_FORMAT (version: $($versionOutput.Trim()))"
@@ -79,18 +84,5 @@ $sourceFiles | ForEach-Object -Parallel {
     & $cf @args $_
 } -ThrottleLimit ([Environment]::ProcessorCount)
 
-# After formatting, check if the working tree is dirty and report diffs for CI visibility
-$dirty = git ls-files --modified
-if ($dirty) {
-    Write-Host "================================="
-    Write-Host "Files were not formatted properly:"
-    $dirty
-    Write-Host "================================="
-    Write-Host "Diffs (these are the changes that clang-format made or would make):"
-    git --no-pager diff --no-color -- $dirty
-    Write-Host "================================="
-    exit 1
-}
-
-Write-Host "All files are properly formatted."
+Write-Host "Formatting complete. Run ci/check-changes.ps1 to verify the working tree is clean."
 exit 0

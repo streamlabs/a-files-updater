@@ -15,7 +15,7 @@ if ($dirty) {
     $dirty
     Write-Host "================================="
     Write-Host "Formatting changes required (see diff below):"
-    git --no-pager diff --no-color -- $dirty
+    git --no-pager diff --no-color
     Write-Host "================================="
     exit 1
 }

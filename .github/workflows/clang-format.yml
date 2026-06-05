@@ -44,7 +44,6 @@ jobs:
 
       - name: 'Run clang-format'
         run: |
-          clang-format --version
           ./ci/check-format.ps1
           ./ci/check-changes.ps1
         shell: pwsh
