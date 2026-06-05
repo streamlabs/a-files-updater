@@ -265,7 +265,7 @@ void update_client::handle_resolve(const boost::system::error_code &error, resol
 }
 
 update_client::update_client(struct update_parameters *params)
-	: params(params), wait_for_blockers(io_ctx), show_user_blockers_list(true), active_workers(0), resolver(io_ctx), domain_resolve_timeout(io_ctx), package_download_timer(io_ctx)
+	: params(params), wait_for_blockers(io_ctx), show_user_blockers_list(true), active_workers(0), resolver(io_ctx), package_download_timer(io_ctx), domain_resolve_timeout(io_ctx)
 {
 	new_files_dir = params->temp_dir;
 	new_files_dir /= "new-files";
@@ -437,7 +437,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 		},
 		error);
 
-	if (error.failed()) {
+	if (error) {
 		installer_events->installer_package_failed(packageName, "HTTP(1) " + error.message());
 		return;
 	}
@@ -466,7 +466,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 	for (; endpoint_iterator != tcp::resolver::iterator{}; ++endpoint_iterator) {
 		local_ssl_socket.lowest_layer().close(error);
 		local_ssl_socket.lowest_layer().open(endpoint_iterator->endpoint().protocol(), error);
-		if (error.failed())
+		if (error)
 			continue;
 
 		// Force-closed out-of-band by Skip/timeout to interrupt the blocking ops below;
@@ -474,11 +474,11 @@ void update_client::install_package(const std::string &packageName, std::string 
 		active_package_native_socket.store((uintptr_t)local_ssl_socket.lowest_layer().native_handle());
 
 		local_ssl_socket.lowest_layer().connect(*endpoint_iterator, error);
-		if (!error.failed())
+		if (!error)
 			break;
 	}
 
-	if (error.failed()) {
+	if (error) {
 		finish_package();
 		if (install_packages_cancelled)
 			return;
@@ -500,7 +500,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 
 	local_ssl_socket.handshake(ssl::stream_base::handshake_type::client, error);
 
-	if (error.failed()) {
+	if (error) {
 		finish_package();
 		if (install_packages_cancelled)
 			return;
@@ -520,7 +520,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 
 	http::write(local_ssl_socket, local_request, error);
 
-	if (error.failed()) {
+	if (error) {
 		finish_package();
 		if (install_packages_cancelled)
 			return;
@@ -533,7 +533,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 	local_response_parser.body_limit(std::numeric_limits<unsigned long long>::max());
 	http::read_header(local_ssl_socket, local_response_buf, local_response_parser, error);
 
-	if (error.failed()) {
+	if (error) {
 		finish_package();
 		if (install_packages_cancelled)
 			return;
@@ -572,9 +572,9 @@ void update_client::install_package(const std::string &packageName, std::string 
 		}
 
 		installer_events->installer_download_progress(double(local_response_parser.get().body().size()) / double(content_length));
-	} while (!error.failed() && !local_response_parser.is_done());
+	} while (!error && !local_response_parser.is_done());
 
-	if (error.failed()) {
+	if (error) {
 		finish_package();
 		if (install_packages_cancelled)
 			return;
