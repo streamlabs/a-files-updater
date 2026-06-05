@@ -24,20 +24,6 @@ OpenSSL and zlib are installed automatically by vcpkg during the CMake configure
 In order to build, set the above variables (see CMake find_package documentation for more flexible hints) and then run cmake however you want.
 A C++17 comformant compiler is required. Outside of that, as long as the dependencies are met and compatible, you can use whatever compiler you want.
 
-## Openssl build from source
-* clone https://github.com/openssl
-* install perl. 
-  download from http://strawberryperl.com/
-* in console check perl and setup VC env
-  perl --version 
-  "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvars64.bat"
-* configure to build 64 static lib 
-  perl Configure VC-WIN64A no-asm no-shared --prefix=C:\work\libs\openssl-lib-vvv-x64\
-* build and install 
-  nmake 
-  nmake test && nmake install 
-* make an archive from install path 
-
 ## Localization
 
 Boost.locale lib with a gettext format used for a localization. 
