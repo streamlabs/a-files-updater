@@ -54,7 +54,6 @@ find_package(Boost
 	COMPONENTS
 	iostreams
 	system
-	date_time
 	locale
 )
 INCLUDE_DIRECTORIES(${Boost_INCLUDE_DIR})
@@ -101,7 +100,6 @@ target_link_libraries(slobs-updater
 	Boost::iostreams
 	Boost::locale
 	Boost::system
-	Boost::date_time
 	OpenSSL::SSL
 	OpenSSL::Crypto
 	ZLIB::ZLIB
