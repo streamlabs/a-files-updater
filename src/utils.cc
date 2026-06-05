@@ -334,6 +334,7 @@ std::string calculate_files_checksum(const fs::path &path)
 			std::streamsize read_byte = file.gcount();
 			if (read_byte != 0) {
 				if (EVP_DigestUpdate(sha256, buffer, read_byte) != 1) {
+					log_warn("SHA-256 update failed");
 					EVP_MD_CTX_free(sha256);
 					return "";
 				}
@@ -344,6 +345,7 @@ std::string calculate_files_checksum(const fs::path &path)
 		}
 
 		if (EVP_DigestFinal_ex(sha256, hash, nullptr) != 1) {
+			log_warn("SHA-256 finalization failed");
 			EVP_MD_CTX_free(sha256);
 			return "";
 		}

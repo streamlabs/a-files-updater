@@ -302,6 +302,11 @@ int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump
 		boost::system::error_code error = boost::asio::error::host_not_found;
 		while (error && endpoint_iterator != endpoints.end()) {
 			ssl_socket.lowest_layer().close();
+			ssl_socket.lowest_layer().open(endpoint_iterator->endpoint().protocol(), error);
+			if (error) {
+				++endpoint_iterator;
+				continue;
+			}
 			ssl_socket.lowest_layer().connect(endpoint_iterator->endpoint(), error);
 			if (error) {
 				++endpoint_iterator;
