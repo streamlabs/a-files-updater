@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <string>
+#include <chrono>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl/error.hpp>
@@ -58,7 +59,7 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 	*  time for each step of file downloader connection.
 	*  Also it limits a recieve buffer so a timer limit a too slow fill of the buffer.
 	*/
-	boost::asio::deadline_timer deadline;
+	boost::asio::steady_timer deadline;
 	int deadline_default_timeout = 5;
 	bool deadline_reached = false;
 	int retries = 0;
@@ -116,7 +117,7 @@ update_http_request<Body, IncludeVersion>::update_http_request(update_client *cl
 
 	response_parser.body_limit(std::numeric_limits<unsigned long long>::max());
 
-	deadline.expires_at(boost::posix_time::pos_infin);
+	deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 }
 
 template<class Body, bool IncludeVersion> update_http_request<Body, IncludeVersion>::~update_http_request()
@@ -135,12 +136,12 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		}
 	}
 
-	if (deadline.expires_at() <= boost::asio::deadline_timer::traits_type::now()) {
+	if (deadline.expiry() <= std::chrono::steady_clock::now()) {
 		log_info("Timeout for file download operation triggered for %s", target.c_str());
 		deadline_reached = true;
 
 		try {
-			deadline.expires_at(boost::posix_time::pos_infin);
+			deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 		} catch (...) {
 			log_error("Got error canceling timer");
 		}
@@ -157,7 +158,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::switch_deadline_on()
 {
-	deadline.expires_from_now(boost::posix_time::seconds(deadline_default_timeout));
+	deadline.expires_after(std::chrono::seconds(deadline_default_timeout));
 	check_deadline_callback_err(make_error_code(boost::system::errc::success));
 }
 

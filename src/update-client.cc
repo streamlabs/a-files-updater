@@ -3,6 +3,7 @@
 #include <mutex>
 #include <thread>
 #include <regex>
+#include <chrono>
 
 #include <winsock2.h>
 
@@ -399,7 +400,7 @@ void update_client::do_stuff()
 		install_packages_cancelled = false;
 	}
 
-	domain_resolve_timeout.expires_from_now(boost::posix_time::seconds(10));
+	domain_resolve_timeout.expires_after(std::chrono::seconds(10));
 	check_resolve_timeout_callback_err({});
 
 	log_info("Ready to resolve cdn address \"%s\" and \"%s\" ", params->host.authority.c_str(), params->host.scheme.c_str());
@@ -438,7 +439,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 
 	ssl::stream<tcp::socket> local_ssl_socket(io_ctx, ssl_context);
 
-	package_download_timer.expires_from_now(boost::posix_time::seconds(180));
+	package_download_timer.expires_after(std::chrono::seconds(180));
 	package_download_timer.async_wait([this, packageName](const boost::system::error_code &ec) {
 		if (ec)
 			return;
@@ -662,7 +663,7 @@ void update_client::check_resolve_timeout_callback_err(const boost::system::erro
 		}
 	}
 
-	if (domain_resolve_timeout.expires_at() <= boost::asio::deadline_timer::traits_type::now()) {
+	if (domain_resolve_timeout.expiry() <= std::chrono::steady_clock::now()) {
 		resolver.cancel();
 		log_info("Timeout for cdn resolve triggered.");
 		handle_network_error(error, boost::locale::translate("Failed to connect to update server."));
@@ -816,7 +817,7 @@ void update_client::process_manifest_results()
 	}
 
 	wait_for_blockers.cancel();
-	wait_for_blockers.expires_from_now(boost::posix_time::pos_infin);
+	wait_for_blockers.expires_at((std::chrono::steady_clock::time_point::max)());
 
 	for (auto pid_context : pids_waiters) {
 		delete pid_context;
@@ -888,7 +889,7 @@ void update_client::process_manifest_results()
 			} break;
 			};
 
-			wait_for_blockers.expires_from_now(boost::posix_time::seconds(1));
+			wait_for_blockers.expires_after(std::chrono::seconds(1));
 			wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
 			return;
 		}
@@ -952,7 +953,7 @@ void update_client::process_manifest_results()
 			} break;
 			};
 
-			wait_for_blockers.expires_from_now(boost::posix_time::seconds(1));
+			wait_for_blockers.expires_after(std::chrono::seconds(1));
 			wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
 			return;
 		} else {
@@ -1088,7 +1089,7 @@ void update_client::handle_manifest_result(manifest_request<manifest_body> *requ
 
 	this->downloader_events->downloader_preparing(true);
 
-	wait_for_blockers.expires_from_now(boost::posix_time::seconds(3));
+	wait_for_blockers.expires_after(std::chrono::seconds(3));
 	wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
 
 	/* let time for Streamlabs Desktop process to quit and make files available for update */
