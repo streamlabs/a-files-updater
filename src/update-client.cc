@@ -416,7 +416,6 @@ void update_client::install_package(const std::string &packageName, std::string 
 	log_info("Starting package download/install for \"%s\" (from %s)", packageName.c_str(), url.c_str());
 
 	boost::system::error_code error;
-	boost::asio::io_service io_service;
 
 	std::string domainName;
 	boost::replace_all(url, "https://", "");
@@ -429,13 +428,8 @@ void update_client::install_package(const std::string &packageName, std::string 
 		domainName.push_back(url[itr]);
 	}
 
-	tcp::resolver local_resolver(io_service);
-	tcp::resolver::iterator endpoint_iterator = local_resolver.resolve(
-		tcp::resolver::query{
-			domainName,
-			"443",
-		},
-		error);
+	tcp::resolver local_resolver(io_ctx);
+	tcp::resolver::results_type endpoints = local_resolver.resolve(domainName, "443", error);
 
 	if (error) {
 		installer_events->installer_package_failed(packageName, "HTTP(1) " + error.message());
@@ -463,7 +457,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 
 	// Open before each connect so the live handle is published (for the timeout/Skip
 	// path to close) before the blocking connect - native_handle() is invalid until open.
-	for (; endpoint_iterator != tcp::resolver::iterator{}; ++endpoint_iterator) {
+	for (auto endpoint_iterator = endpoints.begin(); endpoint_iterator != endpoints.end(); ++endpoint_iterator) {
 		local_ssl_socket.lowest_layer().close(error);
 		local_ssl_socket.lowest_layer().open(endpoint_iterator->endpoint().protocol(), error);
 		if (error)
@@ -480,7 +474,7 @@ void update_client::install_package(const std::string &packageName, std::string 
 			return;
 		}
 
-		local_ssl_socket.lowest_layer().connect(*endpoint_iterator, error);
+		local_ssl_socket.lowest_layer().connect(endpoint_iterator->endpoint(), error);
 		if (!error)
 			break;
 	}

@@ -23,8 +23,7 @@ else()
 	set(RELEASE_VERSION_COMMA "0,0,0,0")
 endif()
 
-# zlib and openssl come from vcpkg (see vcpkg.json); boost still from the S3 archive.
-set(BOOST_ROOT ${CMAKE_DEPS_DIR}/boost)
+# zlib, openssl, and boost all come from vcpkg (see vcpkg.json).
 
 set(OPENSSL_USE_STATIC_LIBS TRUE)
 find_package(OpenSSL REQUIRED)
@@ -51,7 +50,6 @@ set(Boost_DEBUG OFF)
 set(Boost_RELEASE ON)
 
 find_package(Boost
-	1.79.0 EXACT
 	REQUIRED
 	COMPONENTS
 	iostreams
