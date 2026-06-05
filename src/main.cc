@@ -1175,7 +1175,7 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 	prompting = true;
 
 	if (!params.interactive) {
-		log_info("Non-interactive mode: dialog will auto-%s after 30 seconds", state.default_accept ? "accept" : "decline");
+		log_info("Non-interactive mode: dialog will auto-%s immediately", state.default_accept ? "accept" : "decline");
 
 		if (!state.default_accept) {
 			should_cancel = true;
@@ -1183,7 +1183,10 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 			return false;
 		}
 
-		SetTimer(frame, 2, 30000, &auto_accept_timer);
+		// Auto-accept as soon as the dialog is built and painted. The whole dialog
+		// code still runs (so tests catch future rendering bugs); we just don't wait.
+		// 1 is clamped to USER_TIMER_MINIMUM (~10ms) - long 30s waits stack up in tests.
+		SetTimer(frame, 2, 1, &auto_accept_timer);
 	}
 
 	text_panel_->set_text(state.content.c_str());
