@@ -1,6 +1,8 @@
 #pragma once
 #include "update-http-request.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <fstream>
 #include "utils.hpp"
 #include "checksum-filters.hpp"

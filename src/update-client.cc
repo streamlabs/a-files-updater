@@ -473,6 +473,13 @@ void update_client::install_package(const std::string &packageName, std::string 
 		// safe here because no other socket is opened on io_ctx during the package phase.
 		active_package_native_socket.store((uintptr_t)local_ssl_socket.lowest_layer().native_handle());
 
+		// A Skip that arrived before the handle was published could not close the
+		// socket; bail before the blocking connect so Skip does not appear to hang.
+		if (install_packages_cancelled) {
+			finish_package();
+			return;
+		}
+
 		local_ssl_socket.lowest_layer().connect(*endpoint_iterator, error);
 		if (!error)
 			break;
