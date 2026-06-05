@@ -9,6 +9,7 @@
 
 #include "logger/log.h"
 #include "checksum-filters.hpp"
+#include <openssl/evp.h>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/locale.hpp>
 #include <filesystem>
@@ -320,22 +321,23 @@ std::string calculate_files_checksum(const fs::path &path)
 
 	std::ifstream file(path, std::ios::in | std::ios::binary);
 	if (file.is_open()) {
-		SHA256_CTX sha256;
-		SHA256_Init(&sha256);
+		EVP_MD_CTX *sha256 = EVP_MD_CTX_new();
+		EVP_DigestInit_ex(sha256, EVP_sha256(), nullptr);
 
 		unsigned char buffer[4096];
 		while (true) {
 			file.read((char *)buffer, 4096);
 			std::streamsize read_byte = file.gcount();
 			if (read_byte != 0) {
-				SHA256_Update(&sha256, buffer, read_byte);
+				EVP_DigestUpdate(sha256, buffer, read_byte);
 			}
 			if (!file.good()) {
 				break;
 			}
 		}
 
-		SHA256_Final(hash, &sha256);
+		EVP_DigestFinal_ex(sha256, hash, nullptr);
+		EVP_MD_CTX_free(sha256);
 
 		file.close();
 
