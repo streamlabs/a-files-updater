@@ -145,8 +145,10 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 			log_error("Got error canceling timer");
 		}
 
+		// close() (not shutdown()) - only close cancels a pending overlapped read/connect
+		// on Windows, so the stalled handler actually fires and the worker is not lost.
 		boost::system::error_code ignored_ec;
-		ssl_socket.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored_ec);
+		ssl_socket.lowest_layer().close(ignored_ec);
 	} else {
 		// Put the actor back to sleep.
 		deadline.async_wait(bind(&update_http_request<Body, IncludeVersion>::check_deadline_callback_err, this, std::placeholders::_1));

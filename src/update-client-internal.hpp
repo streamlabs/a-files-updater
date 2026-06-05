@@ -1,6 +1,8 @@
 #pragma once
 #include "update-http-request.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <fstream>
 #include "utils.hpp"
 #include "checksum-filters.hpp"
@@ -105,6 +107,10 @@ struct update_client {
 	bool show_user_blockers_list;
 	std::wstring process_list_text;
 
+	std::atomic<bool> install_packages_cancelled{false};
+	boost::asio::deadline_timer package_download_timer;
+	std::atomic<uintptr_t> active_package_native_socket{~uintptr_t(0)};
+
 	enum class blocker_phase { virtualcam, generic };
 	blocker_phase current_blocker_phase{blocker_phase::virtualcam};
 
@@ -115,6 +121,8 @@ struct update_client {
 	boost::asio::deadline_timer domain_resolve_timeout;
 	void check_resolve_timeout_callback_err(const boost::system::error_code &error);
 	std::mutex handle_error_mutex;
+
+	void cancel_install_packages();
 
 private:
 	// [packageName] = { url, params }

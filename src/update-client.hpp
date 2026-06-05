@@ -115,4 +115,6 @@ void update_client_start(struct update_client *);
 void update_client_flush(struct update_client *);
 
 void register_install_package(struct update_client *client, const std::string &packageName, const std::string &url, const std::string &startParams);
+
+void update_client_cancel_install_packages(struct update_client *client);
 }
