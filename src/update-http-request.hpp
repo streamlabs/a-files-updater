@@ -54,10 +54,10 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 
 	void set_sni_hostname();
 
-	/* We need way to detect stuck connection.
-	*  For that we use a steady timer what can limit
-	*  time for each step of file downloader connection.
-	*  Also it limits a receive buffer so a timer limit a too slow fill of the buffer.
+	/* We need a way to detect a stuck connection.
+	*  For that we use a steady timer that limits the
+	*  time for each step of the file downloader connection.
+	*  It also bounds the receive buffer, so the timer limits an overly slow fill of the buffer.
 	*/
 	boost::asio::steady_timer deadline;
 	int deadline_default_timeout = 5;
@@ -143,7 +143,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		try {
 			deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 		} catch (...) {
-			log_error("Got error canceling timer");
+			log_error("Got error resetting deadline timer");
 		}
 
 		// close() (not shutdown()) - only close cancels a pending overlapped read/connect
