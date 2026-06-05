@@ -93,7 +93,7 @@ struct update_client {
 	manifest_map_t::const_iterator manifest_iterator;
 
 	resolver_type resolver;
-	ssl::context ssl_context{ssl::context::method::sslv23_client};
+	ssl::context ssl_context{ssl::context::method::tls_client};
 
 	resolver_type::results_type endpoints;
 	std::map<std::string, std::pair<int, int>> endpoint_fails_counts;

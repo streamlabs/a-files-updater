@@ -1,0 +1,9 @@
+{
+  "name": "slobs-updater",
+  "version-string": "0.0.0",
+  "dependencies": [
+    "openssl",
+    "zlib"
+  ],
+  "builtin-baseline": "eb35a05cc21c69ec1399f7532b7dd61d271ac0d1"
+}

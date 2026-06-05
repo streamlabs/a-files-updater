@@ -8,18 +8,18 @@ set DEPS_LOCAL_PATH=build/deps
 ci\download_deps.bat
 ci\localization_prepare_binaries.cmd
 
-cmake -H"." -B"build" -G"Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=RelWithDebInfo -A x64 -DCMAKE_DEPS_DIR=%CD%/build/deps -DCMAKE_INSTALL_PREFIX="%CD%/build/distribute/a-file-updater"
+cmake -H"." -B"build" -G"Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=RelWithDebInfo -A x64 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_DEPS_DIR=%CD%/build/deps -DCMAKE_INSTALL_PREFIX="%CD%/build/distribute/a-file-updater"
 
 cmake --build build --target install --config RelWithDebInfo
 ```
 ##
 This project depends on a few third party libraries.
 
-* OpenSSL 1.1.x
-* Boost 1.79.0 (system, filesystem, thread, regex, and headers for asio, beast, iostreams, core, util)
-* zlib 1.2.x
+* OpenSSL 3.x — provided by vcpkg (see `vcpkg.json`)
+* zlib — provided by vcpkg (see `vcpkg.json`)
+* Boost 1.79.0 (compiled: iostreams, system, date_time, locale; header-only: asio, beast, algorithm) — still a prebuilt archive fetched by `ci\download_deps.bat` (moving to vcpkg next)
 
-Prepackaged binaries of this libraries will be downloaded by ci\download_deps.bat and put inside build/deps
+OpenSSL and zlib are installed automatically by vcpkg during the CMake configure step (manifest mode), so you need a vcpkg checkout — set `VCPKG_ROOT` to it (or pass the toolchain path explicitly as shown above). Boost is downloaded as a prebuilt archive by `ci\download_deps.bat` into `build/deps`.
 
 In order to build, set the above variables (see CMake find_package documentation for more flexible hints) and then run cmake however you want.
 A C++17 comformant compiler is required. Outside of that, as long as the dependencies are met and compatible, you can use whatever compiler you want.

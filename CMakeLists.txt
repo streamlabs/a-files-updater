@@ -23,15 +23,11 @@ else()
 	set(RELEASE_VERSION_COMMA "0,0,0,0")
 endif()
 
-set(ZLIB_ROOT ${CMAKE_DEPS_DIR}/zlib)
-set(OPENSSL_ROOT_DIR ${CMAKE_DEPS_DIR}/openssl)
+# zlib and openssl come from vcpkg (see vcpkg.json); boost still from the S3 archive.
 set(BOOST_ROOT ${CMAKE_DEPS_DIR}/boost)
 
-# set(OPENSSL_USE_STATIC_LIBS TRUE)
-# set(OPENSSL_MSVC_STATIC_RT TRUE)
-# find_package(OpenSSL REQUIRED )
-# message(STATUS "${OPENSSL_LIBRARIES}")
-set(OPENSSL_LIBRARIES ${OPENSSL_ROOT_DIR}/lib/libssl.lib ${OPENSSL_ROOT_DIR}/lib/libcrypto.lib)
+set(OPENSSL_USE_STATIC_LIBS TRUE)
+find_package(OpenSSL REQUIRED)
 
 option(USE_STREAMLABS_RESOURCE "Embed and use the streamlabs resource file in the resulting executable" ON)
 
@@ -97,7 +93,6 @@ target_include_directories(slobs-updater
 	PRIVATE src/argtable
 	PRIVATE src/fmt
 	PRIVATE ${CMAKE_BINARY_DIR}/_deps/nlohmann_json
-	SYSTEM PUBLIC ${OPENSSL_ROOT_DIR}/include
 )
 
 target_link_libraries(slobs-updater
@@ -109,7 +104,8 @@ target_link_libraries(slobs-updater
 	Boost::locale
 	Boost::system
 	Boost::date_time
-	${OPENSSL_LIBRARIES}
+	OpenSSL::SSL
+	OpenSSL::Crypto
 	ZLIB::ZLIB
 
 	# -MANIFESTUAC:level=requireAdministrator

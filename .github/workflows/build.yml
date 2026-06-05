@@ -8,17 +8,18 @@ on:
   push:
     paths-ignore:
       - '**.md'
-    branches: [ "master" ]
+    branches: [ "master", "develop" ]
     tags:
       - '*'
   pull_request:
     paths-ignore:
       - '**.md'
-    branches: [ "master" ]
+    branches: [ "master", "develop" ]
 
 env:
   RELEASE_BUCKET: "obs-studio-deployment"
   DEPS_LOCAL_PATH: ${{github.workspace}}/build/deps
+  VCPKG_DEFAULT_BINARY_CACHE: ${{github.workspace}}/vcpkg_cache
 
 permissions:
   contents: read
@@ -40,6 +41,16 @@ jobs:
           node-version: 16
       - name: Install dependencies
         run: yarn install --immutable --immutable-cache --check-cache
+      - name: Create vcpkg binary cache dir
+        run: New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/vcpkg_cache"
+        shell: pwsh
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg_cache
+          key: vcpkg-${{ runner.os }}-static-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-static-
       - name: Download binary deps
         run: ./ci/download_deps.bat
       - name: Download gettext binaries
@@ -52,6 +63,8 @@ jobs:
           call "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Auxiliary/Build/vcvars64.bat" 
           cmake -H"${{ github.workspace }}" -B"build" -G"Visual Studio 17 2022" ^
           -DCMAKE_BUILD_TYPE=RelWithDebInfo -A x64 ^
+          -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%/scripts/buildsystems/vcpkg.cmake" ^
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
           -DCMAKE_DEPS_DIR=${{env.DEPS_LOCAL_PATH}} ^
           -DCMAKE_INSTALL_PREFIX="build/distribute/a-file-updater"
         env:
