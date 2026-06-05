@@ -617,8 +617,7 @@ const std::string update_client::get_endpoint_address_string(resolver_type::resu
 {
 	std::string ret = "";
 	if (iter != endpoints.end()) {
-		boost::system::error_code ec;
-		ret = (*iter).endpoint().address().to_string(ec);
+		ret = (*iter).endpoint().address().to_string();
 	}
 	return ret;
 }
@@ -1193,32 +1192,32 @@ void update_client::next_manifest_entry(int index)
 
 template<> void update_http_request<manifest_body, false>::handle_download_canceled()
 {
-	client_ctx->io_ctx.post(boost::bind(&update_client::handle_manifest_download_canceled, client_ctx, this));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_canceled, client_ctx, this));
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_download_canceled()
 {
-	client_ctx->io_ctx.post(boost::bind(&update_client::handle_file_download_canceled, client_ctx, this));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_canceled, client_ctx, this));
 }
 
 template<> void update_http_request<manifest_body, false>::handle_download_error(const boost::system::error_code &error, const std::string &str)
 {
-	client_ctx->io_ctx.post(boost::bind(&update_client::handle_manifest_download_error, client_ctx, this, error, str));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_error, client_ctx, this, error, str));
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_download_error(const boost::system::error_code &error, const std::string &str)
 {
-	client_ctx->io_ctx.post(boost::bind(&update_client::handle_file_download_error, client_ctx, this, error, str));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_error, client_ctx, this, error, str));
 }
 
 template<> void update_http_request<manifest_body, false>::handle_result(update_file_t *file_ctx)
 {
-	client_ctx->io_ctx.post(boost::bind(&update_client::handle_manifest_result, client_ctx, this));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_result, client_ctx, this));
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_result(update_file_t *file_ctx)
 {
-	client_ctx->io_ctx.post(boost::bind(&update_client::handle_file_result, client_ctx, this, file_ctx, this->worker_id));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_result, client_ctx, this, file_ctx, this->worker_id));
 }
 
 template<> void update_http_request<http::dynamic_body, true>::start_reading()

@@ -122,6 +122,8 @@ target_compile_definitions(slobs-updater
 	-DUNICODE
 	-D_UNICODE
 	-DBOOST_IOSTREAMS_NO_LIB
+	# Asio 1.87+ no longer auto-enables the Boost.Date_Time timers (deadline_timer)
+	-DBOOST_ASIO_HAS_BOOST_DATE_TIME
 	-DSENTRY_PROJECT_ID="${SENTRY_PROJECT_ID}"
 	-DSENTRY_PROJECT_KEY="${SENTRY_PROJECT_KEY}"
 	-DRELEASE_VERSION="${RELEASE_VERSION}"
