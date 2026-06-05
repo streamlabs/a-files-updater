@@ -55,9 +55,9 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 	void set_sni_hostname();
 
 	/* We need way to detect stuck connection.
-	*  For that we use boost deadline timer what can limit
+	*  For that we use a steady timer what can limit
 	*  time for each step of file downloader connection.
-	*  Also it limits a recieve buffer so a timer limit a too slow fill of the buffer.
+	*  Also it limits a receive buffer so a timer limit a too slow fill of the buffer.
 	*/
 	boost::asio::steady_timer deadline;
 	int deadline_default_timeout = 5;

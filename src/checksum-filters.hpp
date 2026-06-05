@@ -19,11 +19,16 @@ public:
 			  boost::iostreams::closable_tag {};
 
 	/* FIXME TODO Signal that errors happened somehow */
-	sha256_filter() { EVP_DigestInit_ex(hasher.get(), EVP_sha256(), nullptr); }
+	sha256_filter()
+	{
+		if (hasher)
+			EVP_DigestInit_ex(hasher.get(), EVP_sha256(), nullptr);
+	}
 
 	template<typename Sink> std::streamsize write(Sink &dest, const char *s, std::streamsize n)
 	{
-		EVP_DigestUpdate(hasher.get(), s, n);
+		if (hasher)
+			EVP_DigestUpdate(hasher.get(), s, n);
 		boost::iostreams::write(dest, s, n);
 		return n;
 	}
@@ -35,9 +40,14 @@ public:
 		if (result == -1)
 			return result;
 
-		EVP_DigestUpdate(hasher.get(), s, result);
+		if (hasher)
+			EVP_DigestUpdate(hasher.get(), s, result);
 		return result;
 	}
 
-	template<class Device> void close(Device &device) { EVP_DigestFinal_ex(hasher.get(), &digest[0], nullptr); }
+	template<class Device> void close(Device &device)
+	{
+		if (hasher)
+			EVP_DigestFinal_ex(hasher.get(), &digest[0], nullptr);
+	}
 };

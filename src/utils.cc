@@ -322,21 +322,31 @@ std::string calculate_files_checksum(const fs::path &path)
 	std::ifstream file(path, std::ios::in | std::ios::binary);
 	if (file.is_open()) {
 		EVP_MD_CTX *sha256 = EVP_MD_CTX_new();
-		EVP_DigestInit_ex(sha256, EVP_sha256(), nullptr);
+		if (!sha256 || EVP_DigestInit_ex(sha256, EVP_sha256(), nullptr) != 1) {
+			log_warn("Failed to initialize SHA-256 context");
+			EVP_MD_CTX_free(sha256);
+			return "";
+		}
 
 		unsigned char buffer[4096];
 		while (true) {
 			file.read((char *)buffer, 4096);
 			std::streamsize read_byte = file.gcount();
 			if (read_byte != 0) {
-				EVP_DigestUpdate(sha256, buffer, read_byte);
+				if (EVP_DigestUpdate(sha256, buffer, read_byte) != 1) {
+					EVP_MD_CTX_free(sha256);
+					return "";
+				}
 			}
 			if (!file.good()) {
 				break;
 			}
 		}
 
-		EVP_DigestFinal_ex(sha256, hash, nullptr);
+		if (EVP_DigestFinal_ex(sha256, hash, nullptr) != 1) {
+			EVP_MD_CTX_free(sha256);
+			return "";
+		}
 		EVP_MD_CTX_free(sha256);
 
 		file.close();

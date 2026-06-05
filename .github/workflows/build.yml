@@ -41,11 +41,12 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable --immutable-cache --check-cache
       - name: Set up vcpkg (pinned to manifest baseline)
-        shell: cmd
+        shell: pwsh
         run: |
+          $base = (Get-Content vcpkg.json | ConvertFrom-Json).'builtin-baseline'
           git clone https://github.com/microsoft/vcpkg.git vcpkg
-          git -C vcpkg checkout eb35a05cc21c69ec1399f7532b7dd61d271ac0d1
-          call vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          git -C vcpkg checkout $base
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
       - name: Create vcpkg binary cache dir
         run: New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/vcpkg_cache"
         shell: pwsh
