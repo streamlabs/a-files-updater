@@ -1,12 +1,14 @@
 #pragma once
 
+#include <memory>
 #include <boost/iostreams/constants.hpp>
 #include <boost/iostreams/categories.hpp>
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 
 class sha256_filter {
 public:
-	SHA256_CTX hasher;
+	std::shared_ptr<EVP_MD_CTX> hasher{EVP_MD_CTX_new(), &EVP_MD_CTX_free};
 	unsigned char digest[SHA256_DIGEST_LENGTH]{};
 	typedef char char_type;
 
@@ -17,11 +19,16 @@ public:
 			  boost::iostreams::closable_tag {};
 
 	/* FIXME TODO Signal that errors happened somehow */
-	sha256_filter() { SHA256_Init(&hasher); }
+	sha256_filter()
+	{
+		if (!hasher || EVP_DigestInit_ex(hasher.get(), EVP_sha256(), nullptr) != 1)
+			hasher.reset();
+	}
 
 	template<typename Sink> std::streamsize write(Sink &dest, const char *s, std::streamsize n)
 	{
-		SHA256_Update(&hasher, s, n);
+		if (hasher)
+			EVP_DigestUpdate(hasher.get(), s, n);
 		boost::iostreams::write(dest, s, n);
 		return n;
 	}
@@ -33,9 +40,14 @@ public:
 		if (result == -1)
 			return result;
 
-		SHA256_Update(&hasher, s, result);
+		if (hasher)
+			EVP_DigestUpdate(hasher.get(), s, result);
 		return result;
 	}
 
-	template<class Device> void close(Device &device) { SHA256_Final(&digest[0], &hasher); }
+	template<class Device> void close(Device &device)
+	{
+		if (hasher)
+			EVP_DigestFinal_ex(hasher.get(), &digest[0], nullptr);
+	}
 };

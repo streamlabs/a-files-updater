@@ -93,7 +93,7 @@ struct update_client {
 	manifest_map_t::const_iterator manifest_iterator;
 
 	resolver_type resolver;
-	ssl::context ssl_context{ssl::context::method::sslv23_client};
+	ssl::context ssl_context{ssl::context::method::tls_client};
 
 	resolver_type::results_type endpoints;
 	std::map<std::string, std::pair<int, int>> endpoint_fails_counts;
@@ -103,12 +103,12 @@ struct update_client {
 
 	std::vector<std::thread> thread_pool;
 
-	boost::asio::deadline_timer wait_for_blockers;
+	boost::asio::steady_timer wait_for_blockers;
 	bool show_user_blockers_list;
 	std::wstring process_list_text;
 
 	std::atomic<bool> install_packages_cancelled{false};
-	boost::asio::deadline_timer package_download_timer;
+	boost::asio::steady_timer package_download_timer;
 	std::atomic<uintptr_t> active_package_native_socket{~uintptr_t(0)};
 
 	enum class blocker_phase { virtualcam, generic };
@@ -118,7 +118,7 @@ struct update_client {
 	std::string download_abort_message;
 	boost::system::error_code download_abort_error;
 
-	boost::asio::deadline_timer domain_resolve_timeout;
+	boost::asio::steady_timer domain_resolve_timeout;
 	void check_resolve_timeout_callback_err(const boost::system::error_code &error);
 	std::mutex handle_error_mutex;
 

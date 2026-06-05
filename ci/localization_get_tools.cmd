@@ -2,6 +2,7 @@ REM download gettext tools from https://mlocati.github.io/articles/gettext-iconv
 
 set GETTEXT_URL=https://github.com/mlocati/gettext-iconv-windows/releases/download/v0.21-v1.16/gettext0.21-iconv1.16-static-64.zip
 set GETTEXT_DIR=gettext_dist
+if not exist build mkdir build
 cd build
 
 if exist %GETTEXT_DIR%\ (

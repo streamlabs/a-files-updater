@@ -1,0 +1,17 @@
+{
+  "name": "slobs-updater",
+  "version-string": "0.0.0",
+  "dependencies": [
+    "openssl",
+    "zlib",
+    "boost-algorithm",
+    { "name": "boost-asio", "default-features": false },
+    "boost-beast",
+    "boost-bind",
+    "boost-exception",
+    "boost-iostreams",
+    "boost-locale",
+    "boost-system"
+  ],
+  "builtin-baseline": "eb35a05cc21c69ec1399f7532b7dd61d271ac0d1"
+}

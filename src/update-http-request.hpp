@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <string>
+#include <chrono>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl/error.hpp>
@@ -53,12 +54,12 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 
 	void set_sni_hostname();
 
-	/* We need way to detect stuck connection.
-	*  For that we use boost deadline timer what can limit
-	*  time for each step of file downloader connection.
-	*  Also it limits a recieve buffer so a timer limit a too slow fill of the buffer.
+	/* We need a way to detect a stuck connection.
+	*  For that we use a steady timer that limits the
+	*  time for each step of the file downloader connection.
+	*  It also bounds the receive buffer, so the timer limits an overly slow fill of the buffer.
 	*/
-	boost::asio::deadline_timer deadline;
+	boost::asio::steady_timer deadline;
 	int deadline_default_timeout = 5;
 	bool deadline_reached = false;
 	int retries = 0;
@@ -72,7 +73,7 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 	void handle_result(update_file_t *file_ctx);
 
 	void start_connect();
-	void handle_connect(const boost::system::error_code &error, tcp::resolver::results_type::iterator ep);
+	void handle_connect(const boost::system::error_code &error);
 	void handle_handshake(const boost::system::error_code &error);
 	void handle_request(boost::system::error_code &error, size_t bytes);
 	void handle_response_header(boost::system::error_code &error, size_t bytes);
@@ -116,7 +117,7 @@ update_http_request<Body, IncludeVersion>::update_http_request(update_client *cl
 
 	response_parser.body_limit(std::numeric_limits<unsigned long long>::max());
 
-	deadline.expires_at(boost::posix_time::pos_infin);
+	deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 }
 
 template<class Body, bool IncludeVersion> update_http_request<Body, IncludeVersion>::~update_http_request()
@@ -135,14 +136,14 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		}
 	}
 
-	if (deadline.expires_at() <= boost::asio::deadline_timer::traits_type::now()) {
+	if (deadline.expiry() <= std::chrono::steady_clock::now()) {
 		log_info("Timeout for file download operation triggered for %s", target.c_str());
 		deadline_reached = true;
 
 		try {
-			deadline.expires_at(boost::posix_time::pos_infin);
+			deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 		} catch (...) {
-			log_error("Got error canceling timer");
+			log_error("Got error resetting deadline timer");
 		}
 
 		// close() (not shutdown()) - only close cancels a pending overlapped read/connect
@@ -157,7 +158,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::switch_deadline_on()
 {
-	deadline.expires_from_now(boost::posix_time::seconds(deadline_default_timeout));
+	deadline.expires_after(std::chrono::seconds(deadline_default_timeout));
 	check_deadline_callback_err(make_error_code(boost::system::errc::success));
 }
 
@@ -183,7 +184,7 @@ bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const b
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::start_connect()
 {
-	auto connect_handler = [this](auto e, auto b) { this->handle_connect(e, b); };
+	auto connect_handler = [this](auto e, auto) { this->handle_connect(e); };
 
 	switch_deadline_on();
 
@@ -207,8 +208,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 	}
 }
 
-template<class Body, bool IncludeVersion>
-void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error, tcp::resolver::results_type::iterator ep)
+template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error)
 {
 	if (handle_callback_precheck(error, "connect to host")) {
 		return;

@@ -292,19 +292,22 @@ int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump
 				    boost::asio::ssl::context::no_tlsv1 | boost::asio::ssl::context::no_tlsv1_1);
 		context.set_default_verify_paths();
 
-		boost::asio::io_service io_service;
-		boost::asio::ssl::stream<boost::asio::ip::tcp::socket> ssl_socket(io_service, context);
+		boost::asio::io_context io_context;
+		boost::asio::ssl::stream<boost::asio::ip::tcp::socket> ssl_socket(io_context, context);
 
-		tcp::resolver resolver(io_service);
-		tcp::resolver::query query(host, protocol);
-		tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
-		tcp::resolver::iterator end;
+		tcp::resolver resolver(io_context);
+		tcp::resolver::results_type endpoints = resolver.resolve(host, protocol);
+		auto endpoint_iterator = endpoints.begin();
 
-		tcp::socket socket(io_service);
 		boost::system::error_code error = boost::asio::error::host_not_found;
-		while (error && endpoint_iterator != end) {
+		while (error && endpoint_iterator != endpoints.end()) {
 			ssl_socket.lowest_layer().close();
-			boost::asio::connect(ssl_socket.lowest_layer(), endpoint_iterator, error);
+			ssl_socket.lowest_layer().open(endpoint_iterator->endpoint().protocol(), error);
+			if (error) {
+				++endpoint_iterator;
+				continue;
+			}
+			ssl_socket.lowest_layer().connect(endpoint_iterator->endpoint(), error);
 			if (error) {
 				++endpoint_iterator;
 				continue;
