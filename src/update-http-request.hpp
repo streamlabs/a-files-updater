@@ -208,8 +208,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 	}
 }
 
-template<class Body, bool IncludeVersion>
-void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error)
+template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error)
 {
 	if (handle_callback_precheck(error, "connect to host")) {
 		return;
