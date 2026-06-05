@@ -744,8 +744,9 @@ void callbacks_impl::installer_download_start(const std::string &packageName)
 	std::wstring skip_label = ConvertToUtf16WS(boost::locale::translate("Skip"));
 	{
 		std::lock_guard<std::mutex> lock(cancel_label_mutex);
+		if (!package_phase_active)
+			saved_cancel_label = cancel_label;
 		package_phase_active = true;
-		saved_cancel_label = cancel_label;
 		cancel_label = skip_label;
 	}
 	SetWindowTextW(cancel_button, skip_label.c_str());

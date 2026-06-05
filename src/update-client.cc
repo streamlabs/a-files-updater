@@ -582,6 +582,11 @@ void update_client::install_package(const std::string &packageName, std::string 
 		return;
 	}
 
+	if (install_packages_cancelled) {
+		finish_package();
+		return;
+	}
+
 	try {
 		installer_events->installer_run_file(packageName, startParams, beast::buffers_to_string(local_response_parser.get().body().data()));
 	} catch (...) {
