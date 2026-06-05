@@ -77,12 +77,20 @@ if ($VerbosePreference -ne 'SilentlyContinue') {
     $formatArgs += '--verbose'
 }
 
-# Run in parallel (pwsh 7+)
-$sourceFiles | ForEach-Object -Parallel {
+# Run in parallel (pwsh 7+). A parallel runspace does not inherit
+# $ErrorActionPreference, and a native non-zero exit does not throw, so collect
+# the files clang-format failed on and fail the script if there were any.
+$failures = $sourceFiles | ForEach-Object -Parallel {
     $cf = $using:CLANG_FORMAT
     $args = $using:formatArgs
     & $cf @args $_
+    if ($LASTEXITCODE -ne 0) { $_ }
 } -ThrottleLimit ([Environment]::ProcessorCount)
+
+if ($failures) {
+    Write-Error "clang-format failed on: $($failures -join ', ')"
+    exit 1
+}
 
 Write-Host "Formatting complete. Run ci/check-changes.ps1 to verify the working tree is clean."
 exit 0
