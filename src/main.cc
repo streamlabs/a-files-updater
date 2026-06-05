@@ -1175,15 +1175,13 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 	prompting = true;
 
 	if (!params.interactive) {
-		log_info("Non-interactive mode: dialog will auto-%s after 30 seconds", state.default_accept ? "accept" : "decline");
+		log_info("Non-interactive mode: dialog will auto-%s immediately", state.default_accept ? "accept" : "decline");
 
 		if (!state.default_accept) {
 			should_cancel = true;
 			prompting = false;
 			return false;
 		}
-
-		SetTimer(frame, 2, 30000, &auto_accept_timer);
 	}
 
 	text_panel_->set_text(state.content.c_str());
@@ -1203,6 +1201,15 @@ bool callbacks_impl::show_dialog(const DialogState &state)
 
 	RedrawWindow(continue_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
 	RedrawWindow(cancel_button, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+
+	if (!params.interactive) {
+		// Auto-accept once the dialog is fully built. Force a synchronous paint of the
+		// frame and its children first so the rendering/layout code is still exercised
+		// in tests, then arm a near-immediate timer (1 is clamped to USER_TIMER_MINIMUM,
+		// ~10ms) instead of waiting the long interactive timeout.
+		RedrawWindow(frame, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+		SetTimer(frame, 2, 1, &auto_accept_timer);
+	}
 
 	bool result = run_message_loop(state.default_accept);
 
