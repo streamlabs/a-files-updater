@@ -786,9 +786,8 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 			continue;
 
 		std::string path_key = entry.u8string();
-		if (seen_paths.count(path_key))
+		if (!seen_paths.emplace(path_key).second)
 			continue;
-		seen_paths.insert(path_key);
 
 		local_manifest.emplace_back(entry, std::string(""));
 	}
