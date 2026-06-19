@@ -10,6 +10,7 @@
 
 
 #include <fmt/format.h>
+#include <unordered_set>
 #include <aclapi.h>
 
 #include <fstream>
@@ -759,7 +760,15 @@ void update_client::checkup_files(struct blockers_map_t &blockers, struct blocke
 
 void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &virtualcam_blockers)
 {
-	int max_threads = std::thread::hardware_concurrency();
+	int max_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+
+	std::unordered_set<std::string> seen_paths;
+	
+	// Seed from existing entries so we do not add duplicates on re-entrant calls
+	// (e.g. when process_manifest_results is called repeatedly while waiting for blockers)
+	for (const auto& entry_pair : local_manifest) {
+		seen_paths.insert(entry_pair.first.u8string());
+	}
 
 	/* Generate the manifest for the current application directory */
 	fs::recursive_directory_iterator app_dir_iter(params->app_dir);
@@ -776,14 +785,12 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		if (fs::is_directory(entry_status))
 			continue;
 
-		if (std::find_if(local_manifest.begin(), local_manifest.end(),
-				 [&](std::pair<fs::path, std::string> &entry_pair) { return entry_pair.first == entry; }) != local_manifest.end())
+		if (!seen_paths.emplace(std::move(entry.u8string())).second)
 			continue;
 
 		local_manifest.emplace_back(entry, std::string(""));
 	}
-
-	std::vector<std::thread *> workers;
+	std::vector<std::thread> workers;
 
 	if (max_threads > local_manifest.size())
 		max_threads = static_cast<int>(local_manifest.size());
@@ -795,13 +802,13 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 			to = local_manifest.size() * (i + 1) / max_threads;
 		else
 			to = local_manifest.size();
-		workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), std::ref(virtualcam_blockers), static_cast<int>(from), static_cast<int>(to)));
+		workers.emplace_back(&update_client::checkup_files, this, std::ref(blockers), std::ref(virtualcam_blockers), static_cast<int>(from), static_cast<int>(to));
 		from = to;
 	}
 
-	for (auto worker : workers) {
-		if (worker->joinable())
-			worker->join();
+	for (auto& worker : workers) {
+		if (worker.joinable())
+			worker.join();
 	}
 
 	return;
