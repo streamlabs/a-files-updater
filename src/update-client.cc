@@ -807,7 +807,7 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		from = to;
 	}
 
-	for (auto worker : workers) {
+	for (auto &worker : workers) {
 		if (worker.joinable())
 			worker.join();
 	}
