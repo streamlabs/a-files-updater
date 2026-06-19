@@ -760,7 +760,7 @@ void update_client::checkup_files(struct blockers_map_t &blockers, struct blocke
 
 void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &virtualcam_blockers)
 {
-	int max_threads = std::thread::hardware_concurrency();
+	int max_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
 
 	std::unordered_set<std::string> seen_paths;
 	
@@ -786,12 +786,12 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 			continue;
 
 		std::string path_key = entry.u8string();
-		if (!seen_paths.emplace(path_key).second)
+		if (!seen_paths.emplace(std::move(path_key)).second)
 			continue;
 
 		local_manifest.emplace_back(entry, std::string(""));
 	}
-	std::vector<std::thread *> workers;
+	std::vector<std::thread> workers;
 
 	if (max_threads > local_manifest.size())
 		max_threads = static_cast<int>(local_manifest.size());
@@ -803,13 +803,13 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 			to = local_manifest.size() * (i + 1) / max_threads;
 		else
 			to = local_manifest.size();
-		workers.push_back(new std::thread(&update_client::checkup_files, this, std::ref(blockers), std::ref(virtualcam_blockers), static_cast<int>(from), static_cast<int>(to)));
+		workers.emplace_back(&update_client::checkup_files, this, std::ref(blockers), std::ref(virtualcam_blockers), static_cast<int>(from), static_cast<int>(to));
 		from = to;
 	}
 
 	for (auto worker : workers) {
-		if (worker->joinable())
-			worker->join();
+		if (worker.joinable())
+			worker.join();
 	}
 
 	return;
