@@ -785,8 +785,7 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		if (fs::is_directory(entry_status))
 			continue;
 
-		std::string path_key = entry.u8string();
-		if (!seen_paths.emplace(std::move(path_key)).second)
+		if (!seen_paths.emplace(std::move(entry.u8string())).second)
 			continue;
 
 		local_manifest.emplace_back(entry, std::string(""));
@@ -807,7 +806,7 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		from = to;
 	}
 
-	for (auto &worker : workers) {
+	for (auto& worker : workers) {
 		if (worker.joinable())
 			worker.join();
 	}
