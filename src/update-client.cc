@@ -10,6 +10,7 @@
 
 
 #include <fmt/format.h>
+#include <unordered_set>
 #include <aclapi.h>
 
 #include <fstream>
@@ -761,6 +762,8 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 {
 	int max_threads = std::thread::hardware_concurrency();
 
+	std::unordered_set<std::string> seen_paths;
+
 	/* Generate the manifest for the current application directory */
 	fs::recursive_directory_iterator app_dir_iter(params->app_dir);
 	fs::recursive_directory_iterator end_iter{};
@@ -776,13 +779,13 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		if (fs::is_directory(entry_status))
 			continue;
 
-		if (std::find_if(local_manifest.begin(), local_manifest.end(),
-				 [&](std::pair<fs::path, std::string> &entry_pair) { return entry_pair.first == entry; }) != local_manifest.end())
+		std::string path_key = entry.u8string();
+		if (seen_paths.count(path_key))
 			continue;
+		seen_paths.insert(path_key);
 
 		local_manifest.emplace_back(entry, std::string(""));
 	}
-
 	std::vector<std::thread *> workers;
 
 	if (max_threads > local_manifest.size())
