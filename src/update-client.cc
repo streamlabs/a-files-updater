@@ -763,6 +763,12 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 	int max_threads = std::thread::hardware_concurrency();
 
 	std::unordered_set<std::string> seen_paths;
+	
+	// Seed from existing entries so we do not add duplicates on re-entrant calls
+	// (e.g. when process_manifest_results is called repeatedly while waiting for blockers)
+	for (const auto& entry_pair : local_manifest) {
+		seen_paths.insert(entry_pair.first.u8string());
+	}
 
 	/* Generate the manifest for the current application directory */
 	fs::recursive_directory_iterator app_dir_iter(params->app_dir);
