@@ -1237,6 +1237,7 @@ template<> void update_http_request<http::dynamic_body, true>::handle_result(upd
 				  boost::bind(&update_client::handle_file_result, client_ctx, shared_from_this(), file_ctx, this->worker_id));
 	} catch (const std::bad_weak_ptr &) {
 		log_warn("Skipping file result callback; request is already being torn down");
+		delete file_ctx; // handle_file_result would have owned this; free it since the post didn't happen
 	}
 }
 
