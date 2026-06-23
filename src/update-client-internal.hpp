@@ -130,22 +130,24 @@ private:
 
 public:
 	void handle_network_error(const boost::system::error_code &error, const std::string &str);
-	void handle_file_download_error(file_request<http::dynamic_body> *request_ctx, const boost::system::error_code &error, const std::string &str);
-	void handle_file_download_canceled(file_request<http::dynamic_body> *request_ctx);
+	void handle_file_download_error(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, const boost::system::error_code &error,
+					const std::string &str);
+	void handle_file_download_canceled(std::shared_ptr<file_request<http::dynamic_body>> request_ctx);
 
-	void handle_manifest_download_error(manifest_request<manifest_body> *request_ctx, const boost::system::error_code &error, const std::string &str);
-	void handle_manifest_download_canceled(manifest_request<manifest_body> *request_ctx);
+	void handle_manifest_download_error(std::shared_ptr<manifest_request<manifest_body>> request_ctx, const boost::system::error_code &error,
+					    const std::string &str);
+	void handle_manifest_download_canceled(std::shared_ptr<manifest_request<manifest_body>> request_ctx);
 
 	//manifest
 	void handle_resolve(const boost::system::error_code &error, resolver_type::results_type results);
-	void handle_manifest_result(manifest_request<manifest_body> *request_ctx);
+	void handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content);
 	void process_manifest_results();
 	void checkup_files(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers, int from, int to);
 	void checkup_manifest(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers);
 
 	//files
 	void start_downloading_files();
-	void handle_file_result(file_request<http::dynamic_body> *request_ctx, update_file_t *file_ctx, int index);
+	void handle_file_result(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, update_file_t *file_ctx, int index);
 	void next_manifest_entry(int index);
 	void install_package(const std::string &packageName, std::string url, const std::string &startParams);
 	bool check_disk_space();

@@ -11,3 +11,7 @@ test/testfiles
 *messages.mo
 resources/slobs-updater.exe.manifest
 resources/slobs-updater.rc
+
+# Local dev / test files
+CLAUDE.md
+.claude/

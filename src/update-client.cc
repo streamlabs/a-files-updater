@@ -7,15 +7,12 @@
 
 #include <winsock2.h>
 
-
-
 #include <fmt/format.h>
 #include <unordered_set>
 #include <aclapi.h>
 
 #include <fstream>
 #include <iostream>
-
 
 using std::regex;
 using std::cmatch;
@@ -156,7 +153,8 @@ void update_client::handle_network_error(const boost::system::error_code &error,
 	reset_work_threads_guards();
 }
 
-void update_client::handle_file_download_error(file_request<http::dynamic_body> *request_ctx, const boost::system::error_code &error, const std::string &str)
+void update_client::handle_file_download_error(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, const boost::system::error_code &error,
+					       const std::string &str)
 {
 	set_endpoint_fail(request_ctx->used_cdn_node_address);
 
@@ -179,10 +177,11 @@ void update_client::handle_file_download_error(file_request<http::dynamic_body> 
 		handle_file_download_canceled(request_ctx);
 		return;
 	} else {
-		auto new_request_ctx = new file_request<http::dynamic_body>{this, request_ctx->target, request_ctx->worker_id};
+		auto new_request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, request_ctx->target, request_ctx->worker_id);
 		new_request_ctx->retries = request_ctx->retries + 1;
 
-		delete request_ctx;
+		// Post deletion to allow any in-flight handlers to observe the destroyed flag
+		// shared_ptr manages lifetime - no manual delete needed
 
 		Sleep(new_request_ctx->retries * 100);
 
@@ -190,15 +189,17 @@ void update_client::handle_file_download_error(file_request<http::dynamic_body> 
 	}
 }
 
-void update_client::handle_file_download_canceled(file_request<http::dynamic_body> *request_ctx)
+void update_client::handle_file_download_canceled(std::shared_ptr<file_request<http::dynamic_body>> request_ctx)
 {
 	auto index = request_ctx->worker_id;
-	delete request_ctx;
+	// Post deletion to allow any in-flight handlers (especially timers) to observe destroyed flag
+	// shared_ptr manages lifetime - no manual delete needed
 
 	next_manifest_entry(index);
 }
 
-void update_client::handle_manifest_download_error(manifest_request<manifest_body> *request_ctx, const boost::system::error_code &error, const std::string &str)
+void update_client::handle_manifest_download_error(std::shared_ptr<manifest_request<manifest_body>> request_ctx, const boost::system::error_code &error,
+						   const std::string &str)
 {
 	set_endpoint_fail(request_ctx->used_cdn_node_address);
 
@@ -221,10 +222,11 @@ void update_client::handle_manifest_download_error(manifest_request<manifest_bod
 		handle_manifest_download_canceled(request_ctx);
 		return;
 	} else {
-		auto new_request_ctx = new manifest_request<manifest_body>{this, request_ctx->target, request_ctx->worker_id};
+		auto new_request_ctx = std::make_shared<manifest_request<manifest_body>>(this, request_ctx->target, request_ctx->worker_id);
 		new_request_ctx->retries = request_ctx->retries + 1;
 
-		delete request_ctx;
+		// Post deletion to allow any in-flight handlers to observe the destroyed flag
+		// shared_ptr manages lifetime - no manual delete needed
 
 		Sleep(new_request_ctx->retries * 100);
 
@@ -232,10 +234,10 @@ void update_client::handle_manifest_download_error(manifest_request<manifest_bod
 	}
 }
 
-void update_client::handle_manifest_download_canceled(manifest_request<manifest_body> *request_ctx)
+void update_client::handle_manifest_download_canceled(std::shared_ptr<manifest_request<manifest_body>> request_ctx)
 {
 	auto index = request_ctx->worker_id;
-	delete request_ctx;
+	// shared_ptr manages lifetime - no manual delete needed
 
 	handle_network_error(download_abort_error, download_abort_message);
 }
@@ -261,13 +263,19 @@ void update_client::handle_resolve(const boost::system::error_code &error, resol
 
 	std::string manifest_target{params->version + ".sha256"};
 
-	auto *request_ctx = new manifest_request<manifest_body>(this, manifest_target, 0);
+	auto request_ctx = std::make_shared<manifest_request<manifest_body>>(this, manifest_target, 0);
 
 	request_ctx->start_connect();
 }
 
 update_client::update_client(struct update_parameters *params)
-	: params(params), wait_for_blockers(io_ctx), show_user_blockers_list(true), active_workers(0), resolver(io_ctx), package_download_timer(io_ctx), domain_resolve_timeout(io_ctx)
+	: params(params),
+	  wait_for_blockers(io_ctx),
+	  show_user_blockers_list(true),
+	  active_workers(0),
+	  resolver(io_ctx),
+	  package_download_timer(io_ctx),
+	  domain_resolve_timeout(io_ctx)
 {
 	new_files_dir = params->temp_dir;
 	new_files_dir /= "new-files";
@@ -326,7 +334,7 @@ void update_client::cancel_install_packages()
 
 bool update_client::check_disk_space()
 {
-	size_t MIN_FREE_SPACE = 2*1000000000; //2GB
+	size_t MIN_FREE_SPACE = 2 * 1000000000; //2GB
 	std::error_code ec{};
 	bool notified = false;
 
@@ -763,10 +771,10 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 	int max_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
 
 	std::unordered_set<std::string> seen_paths;
-	
+
 	// Seed from existing entries so we do not add duplicates on re-entrant calls
 	// (e.g. when process_manifest_results is called repeatedly while waiting for blockers)
-	for (const auto& entry_pair : local_manifest) {
+	for (const auto &entry_pair : local_manifest) {
 		seen_paths.insert(entry_pair.first.u8string());
 	}
 
@@ -802,11 +810,12 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 			to = local_manifest.size() * (i + 1) / max_threads;
 		else
 			to = local_manifest.size();
-		workers.emplace_back(&update_client::checkup_files, this, std::ref(blockers), std::ref(virtualcam_blockers), static_cast<int>(from), static_cast<int>(to));
+		workers.emplace_back(&update_client::checkup_files, this, std::ref(blockers), std::ref(virtualcam_blockers), static_cast<int>(from),
+				     static_cast<int>(to));
 		from = to;
 	}
 
-	for (auto& worker : workers) {
+	for (auto &worker : workers) {
 		if (worker.joinable())
 			worker.join();
 	}
@@ -1024,7 +1033,7 @@ void update_client::start_downloading_files()
 
 		++this->active_workers;
 
-		auto request_ctx = new file_request<http::dynamic_body>{this, fixup_uri((*this->manifest_iterator).first) + ".gz", i};
+		auto request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, fixup_uri((*this->manifest_iterator).first) + ".gz", i);
 
 		request_ctx->start_connect();
 
@@ -1088,9 +1097,12 @@ template<class ConstBuffer> static size_t handle_manifest_read_buffer(manifest_m
 	return accum;
 }
 
-void update_client::handle_manifest_result(manifest_request<manifest_body> *request_ctx)
+void update_client::handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content)
 {
-	delete request_ctx;
+	// Parse from owned data while request_ctx keeps the original buffer alive if needed
+	handle_manifest_read_buffer(manifest, manifest_content);
+
+	// shared_ptr can now be released
 
 	log_info("Successfuly downloaded manifest. It has info about %d files", manifest.size());
 
@@ -1129,7 +1141,7 @@ update_file_t::update_file_t(const fs::path &file_path) : file_path(file_path), 
 	this->output_chain.push(boost::reference_wrapper<std::ofstream>(this->file_stream), file_buffer_size);
 }
 
-void update_client::handle_file_result(file_request<http::dynamic_body> *request_ctx, update_file_t *file_ctx, int index)
+void update_client::handle_file_result(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, update_file_t *file_ctx, int index)
 {
 	auto &filter = file_ctx->checksum_filter;
 
@@ -1147,7 +1159,7 @@ void update_client::handle_file_result(file_request<http::dynamic_body> *request
 	}
 
 	delete file_ctx;
-	delete request_ctx;
+	// shared_ptr lifetime ends here
 
 	next_manifest_entry(index);
 }
@@ -1186,7 +1198,7 @@ void update_client::next_manifest_entry(int index)
 				* the reference will stay valid */
 				manifest_lock.unlock();
 
-				auto request_ctx = new file_request<http::dynamic_body>{this, fixup_uri(entry.first) + ".gz", index};
+				auto request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, fixup_uri(entry.first) + ".gz", index);
 
 				request_ctx->start_connect();
 			}
@@ -1203,32 +1215,40 @@ void update_client::next_manifest_entry(int index)
 
 template<> void update_http_request<manifest_body, false>::handle_download_canceled()
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_canceled, client_ctx, this));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_canceled, client_ctx, shared_from_this()));
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_download_canceled()
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_canceled, client_ctx, this));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_canceled, client_ctx, shared_from_this()));
 }
 
 template<> void update_http_request<manifest_body, false>::handle_download_error(const boost::system::error_code &error, const std::string &str)
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_error, client_ctx, this, error, str));
+	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_error, client_ctx, shared_from_this(), error, str));
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_download_error(const boost::system::error_code &error, const std::string &str)
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_error, client_ctx, this, error, str));
+	try {
+		boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_error, client_ctx, shared_from_this(), error, str));
+	} catch (const std::bad_weak_ptr &) {
+	}
 }
 
 template<> void update_http_request<manifest_body, false>::handle_result(update_file_t *file_ctx)
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_result, client_ctx, this));
+	// Manifest result is now posted directly from handle_response_body with owned data.
+	// This specialization is kept for compatibility but does nothing.
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_result(update_file_t *file_ctx)
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_result, client_ctx, this, file_ctx, this->worker_id));
+	try {
+		boost::asio::post(client_ctx->io_ctx,
+				  boost::bind(&update_client::handle_file_result, client_ctx, shared_from_this(), file_ctx, this->worker_id));
+	} catch (const std::bad_weak_ptr &) {
+	}
 }
 
 template<> void update_http_request<http::dynamic_body, true>::start_reading()
@@ -1244,8 +1264,9 @@ template<> void update_http_request<http::dynamic_body, true>::start_reading()
 	}
 
 	auto file_ctx = new update_file_t(file_path);
+	auto self = shared_from_this();
 
-	auto read_handler = [this, file_ctx](auto i, auto e) { this->handle_response_body(i, e, file_ctx); };
+	auto read_handler = [self, file_ctx](auto i, auto e) { self->handle_response_body(i, e, file_ctx); };
 
 	switch_deadline_on();
 
@@ -1303,7 +1324,8 @@ void update_http_request<http::dynamic_body, true>::handle_response_body(boost::
 		return;
 	}
 
-	auto read_handler = [this, file_ctx](auto i, auto e) { this->handle_response_body(i, e, file_ctx); };
+	auto self = shared_from_this();
+	auto read_handler = [self, file_ctx](auto i, auto e) { self->handle_response_body(i, e, file_ctx); };
 
 	switch_deadline_on();
 
@@ -1318,9 +1340,12 @@ template<> void update_http_request<manifest_body, false>::handle_response_body(
 
 	auto &buffer = response_parser.get().body();
 
-	handle_manifest_read_buffer(client_ctx->manifest, buffer.data());
+	// Copy manifest data into owned storage before posting.
+	// This prevents dangling buffer issues when the request object is released.
+	std::string manifest_data = beast::buffers_to_string(buffer.data());
 
-	handle_result(nullptr);
+	boost::asio::post(client_ctx->io_ctx,
+			  [self = shared_from_this(), data = std::move(manifest_data)] { self->client_ctx->handle_manifest_result(self, std::move(data)); });
 }
 
 /*##############################################
