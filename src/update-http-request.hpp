@@ -2,6 +2,8 @@
 
 #include <string>
 #include <chrono>
+#include <atomic>
+#include <memory>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl/error.hpp>
@@ -28,7 +30,7 @@ struct update_file_t;
 
 using manifest_body = http::basic_dynamic_body<beast::flat_buffer>;
 
-template<class Body, bool IncludeVersion> struct update_http_request {
+template<class Body, bool IncludeVersion> struct update_http_request : public std::enable_shared_from_this<update_http_request<Body, IncludeVersion>> {
 	update_http_request(update_client *client_ctx, const std::string &target, const int id);
 	~update_http_request();
 
@@ -63,6 +65,9 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 	int deadline_default_timeout = 5;
 	bool deadline_reached = false;
 	int retries = 0;
+
+	// Defense-in-depth: lets an in-flight Asio handler early-out if it runs during teardown
+	std::atomic<bool> destroyed{false};
 
 	void check_deadline_callback_err(const boost::system::error_code &error);
 	void switch_deadline_on();
@@ -122,11 +127,16 @@ update_http_request<Body, IncludeVersion>::update_http_request(update_client *cl
 
 template<class Body, bool IncludeVersion> update_http_request<Body, IncludeVersion>::~update_http_request()
 {
+	destroyed.store(true, std::memory_order_release);
 	deadline.cancel();
 }
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::check_deadline_callback_err(const boost::system::error_code &error)
 {
+	if (destroyed.load(std::memory_order_acquire)) {
+		return;
+	}
+
 	if (error) {
 		if (error == boost::asio::error::operation_aborted) {
 			return;
@@ -152,7 +162,12 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		ssl_socket.lowest_layer().close(ignored_ec);
 	} else {
 		// Put the actor back to sleep.
-		deadline.async_wait(bind(&update_http_request<Body, IncludeVersion>::check_deadline_callback_err, this, std::placeholders::_1));
+		try {
+			auto self = shared_from_this();
+			deadline.async_wait([self](const boost::system::error_code &ec) { self->check_deadline_callback_err(ec); });
+		} catch (const std::bad_weak_ptr &) {
+			// Object no longer owned by shared_ptr - do not re-arm
+		}
 	}
 }
 
@@ -165,6 +180,9 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 template<class Body, bool IncludeVersion>
 bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const boost::system::error_code &error, const std::string &message)
 {
+	if (destroyed.load(std::memory_order_acquire)) {
+		return true;
+	}
 	deadline.cancel();
 
 	if (client_ctx->update_download_aborted) {
@@ -184,7 +202,8 @@ bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const b
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::start_connect()
 {
-	auto connect_handler = [this](auto e, auto) { this->handle_connect(e); };
+	auto self = shared_from_this();
+	auto connect_handler = [self](auto e, auto) { self->handle_connect(e); };
 
 	switch_deadline_on();
 
@@ -216,7 +235,8 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 
 	set_sni_hostname();
 
-	auto handshake_handler = [this](auto e) { this->handle_handshake(e); };
+	auto self = shared_from_this();
+	auto handshake_handler = [self](auto e) { self->handle_handshake(e); };
 
 	switch_deadline_on();
 
@@ -230,7 +250,8 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		return;
 	}
 
-	auto request_handler = [this](auto e, auto b) { this->handle_request(e, b); };
+	auto self = shared_from_this();
+	auto request_handler = [self](auto e, auto b) { self->handle_request(e, b); };
 
 	switch_deadline_on();
 
@@ -243,7 +264,8 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		return;
 	}
 
-	auto read_handler = [this](auto i, auto e) { this->handle_response_header(i, e); };
+	auto self = shared_from_this();
+	auto read_handler = [self](auto i, auto e) { self->handle_response_header(i, e); };
 
 	switch_deadline_on();
 
