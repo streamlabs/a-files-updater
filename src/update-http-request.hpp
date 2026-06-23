@@ -3,6 +3,7 @@
 #include <string>
 #include <chrono>
 #include <atomic>
+#include <memory>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl/error.hpp>

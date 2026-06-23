@@ -180,9 +180,6 @@ void update_client::handle_file_download_error(std::shared_ptr<file_request<http
 		auto new_request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, request_ctx->target, request_ctx->worker_id);
 		new_request_ctx->retries = request_ctx->retries + 1;
 
-		// Post deletion to allow any in-flight handlers to observe the destroyed flag
-		// shared_ptr manages lifetime - no manual delete needed
-
 		Sleep(new_request_ctx->retries * 100);
 
 		new_request_ctx->start_connect();
@@ -192,9 +189,6 @@ void update_client::handle_file_download_error(std::shared_ptr<file_request<http
 void update_client::handle_file_download_canceled(std::shared_ptr<file_request<http::dynamic_body>> request_ctx)
 {
 	auto index = request_ctx->worker_id;
-	// Post deletion to allow any in-flight handlers (especially timers) to observe destroyed flag
-	// shared_ptr manages lifetime - no manual delete needed
-
 	next_manifest_entry(index);
 }
 
@@ -225,9 +219,6 @@ void update_client::handle_manifest_download_error(std::shared_ptr<manifest_requ
 		auto new_request_ctx = std::make_shared<manifest_request<manifest_body>>(this, request_ctx->target, request_ctx->worker_id);
 		new_request_ctx->retries = request_ctx->retries + 1;
 
-		// Post deletion to allow any in-flight handlers to observe the destroyed flag
-		// shared_ptr manages lifetime - no manual delete needed
-
 		Sleep(new_request_ctx->retries * 100);
 
 		new_request_ctx->start_connect();
@@ -237,8 +228,6 @@ void update_client::handle_manifest_download_error(std::shared_ptr<manifest_requ
 void update_client::handle_manifest_download_canceled(std::shared_ptr<manifest_request<manifest_body>> request_ctx)
 {
 	auto index = request_ctx->worker_id;
-	// shared_ptr manages lifetime - no manual delete needed
-
 	handle_network_error(download_abort_error, download_abort_message);
 }
 
@@ -1099,10 +1088,8 @@ template<class ConstBuffer> static size_t handle_manifest_read_buffer(manifest_m
 
 void update_client::handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content)
 {
-	// Parse from owned data while request_ctx keeps the original buffer alive if needed
+	(void)request_ctx; // held only to keep the request alive across the async hop
 	handle_manifest_read_buffer(manifest, manifest_content);
-
-	// shared_ptr can now be released
 
 	log_info("Successfuly downloaded manifest. It has info about %d files", manifest.size());
 
@@ -1159,7 +1146,6 @@ void update_client::handle_file_result(std::shared_ptr<file_request<http::dynami
 	}
 
 	delete file_ctx;
-	// shared_ptr lifetime ends here
 
 	next_manifest_entry(index);
 }
@@ -1275,7 +1261,8 @@ template<> void update_http_request<http::dynamic_body, true>::start_reading()
 
 template<> void update_http_request<manifest_body, false>::start_reading()
 {
-	auto read_handler = [this](auto i, auto e) { this->handle_response_body(i, e, nullptr); };
+	auto self = shared_from_this();
+	auto read_handler = [self](auto i, auto e) { self->handle_response_body(i, e, nullptr); };
 
 	switch_deadline_on();
 
