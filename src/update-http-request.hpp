@@ -66,7 +66,7 @@ template<class Body, bool IncludeVersion> struct update_http_request : public st
 	bool deadline_reached = false;
 	int retries = 0;
 
-	// Protects against use-after-free when Asio handlers outlive manual delete
+	// Defense-in-depth: lets an in-flight Asio handler early-out if it runs during teardown
 	std::atomic<bool> destroyed{false};
 
 	void check_deadline_callback_err(const boost::system::error_code &error);

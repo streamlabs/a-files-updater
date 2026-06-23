@@ -1220,6 +1220,7 @@ template<> void update_http_request<http::dynamic_body, true>::handle_download_e
 	try {
 		boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_error, client_ctx, shared_from_this(), error, str));
 	} catch (const std::bad_weak_ptr &) {
+		log_warn("Skipping file download error callback; request is already being torn down");
 	}
 }
 
@@ -1235,6 +1236,7 @@ template<> void update_http_request<http::dynamic_body, true>::handle_result(upd
 		boost::asio::post(client_ctx->io_ctx,
 				  boost::bind(&update_client::handle_file_result, client_ctx, shared_from_this(), file_ctx, this->worker_id));
 	} catch (const std::bad_weak_ptr &) {
+		log_warn("Skipping file result callback; request is already being torn down");
 	}
 }
 
@@ -1333,7 +1335,7 @@ template<> void update_http_request<manifest_body, false>::handle_response_body(
 	std::string manifest_data = beast::buffers_to_string(buffer.data());
 
 	boost::asio::post(client_ctx->io_ctx,
-			  [self = shared_from_this(), data = std::move(manifest_data)] { self->client_ctx->handle_manifest_result(self, std::move(data)); });
+			  [self = shared_from_this(), data = std::move(manifest_data)]() mutable { self->client_ctx->handle_manifest_result(self, std::move(data)); });
 }
 
 /*##############################################
