@@ -164,7 +164,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		// Put the actor back to sleep.
 		try {
 			auto self = shared_from_this();
-			deadline.async_wait(bind(&update_http_request<Body, IncludeVersion>::check_deadline_callback_err, self, std::placeholders::_1));
+			deadline.async_wait([self](const boost::system::error_code &ec) { self->check_deadline_callback_err(ec); });
 		} catch (const std::bad_weak_ptr &) {
 			// Object no longer owned by shared_ptr - do not re-arm
 		}

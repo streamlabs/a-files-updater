@@ -170,7 +170,7 @@ void update_client::handle_file_download_error(std::shared_ptr<file_request<http
 				update_download_aborted = true;
 
 				download_abort_message = str;
-				download_abort_error = error;
+				download_abort_error = ec;
 			}
 		}
 
@@ -209,7 +209,7 @@ void update_client::handle_manifest_download_error(std::shared_ptr<manifest_requ
 				update_download_aborted = true;
 
 				download_abort_message = str;
-				download_abort_error = error;
+				download_abort_error = ec;
 			}
 		}
 
@@ -227,7 +227,7 @@ void update_client::handle_manifest_download_error(std::shared_ptr<manifest_requ
 
 void update_client::handle_manifest_download_canceled(std::shared_ptr<manifest_request<manifest_body>> request_ctx)
 {
-	auto index = request_ctx->worker_id;
+	(void)request_ctx; // keep-alive only
 	handle_network_error(download_abort_error, download_abort_message);
 }
 
@@ -1130,6 +1130,7 @@ update_file_t::update_file_t(const fs::path &file_path) : file_path(file_path), 
 
 void update_client::handle_file_result(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, update_file_t *file_ctx, int index)
 {
+	(void)request_ctx; // held only to keep the request alive across the async hop
 	auto &filter = file_ctx->checksum_filter;
 
 	try {
