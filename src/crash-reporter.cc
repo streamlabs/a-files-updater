@@ -307,6 +307,12 @@ int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump
 				++endpoint_iterator;
 				continue;
 			}
+
+			// Bound blocking send/recv (TLS handshake and the POST) so a stalled network can't hang the caller.
+			DWORD io_timeout_ms = 5000;
+			::setsockopt(ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&io_timeout_ms), sizeof(io_timeout_ms));
+			::setsockopt(ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&io_timeout_ms), sizeof(io_timeout_ms));
+
 			ssl_socket.lowest_layer().connect(endpoint_iterator->endpoint(), error);
 			if (error) {
 				++endpoint_iterator;

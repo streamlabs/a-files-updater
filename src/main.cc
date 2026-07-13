@@ -838,14 +838,14 @@ void callbacks_impl::installer_run_file(const std::string &packageName, const st
 		case ERROR_PRODUCT_VERSION: // 1638: a newer redist is already installed
 		case ERROR_INSTALL_USEREXIT:
 		case ERROR_CANCELLED:
-			log_info("installer_run_file: '%s' skipped, benign exit code %d", packageName.c_str(), dwExitCode);
+			log_info("installer_run_file: '%s' skipped, benign exit code %lu", packageName.c_str(), dwExitCode);
 			break;
 		default:
 			installer_package_failed(packageName, "exit code " + std::to_string(dwExitCode));
 			break;
 		}
 
-		log_info("installer_run_file finished with error %d", dwExitCode);
+		log_info("installer_run_file finished with exit code %lu", dwExitCode);
 	}
 }
 
