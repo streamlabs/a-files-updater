@@ -100,8 +100,8 @@ std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std:
 		json_report << "	}]}, ";
 	} else if (!ExceptionInfo && minidump_result.size() == 0) {
 		json_report << "	\"exception\": {\"values\":[{";
-		json_report << "		\"type\": \"" << last_error_category << "\", ";
-		json_report << "		\"value\": \"" << last_error_reason << "\" ";
+		json_report << "		\"type\": \"" << escapeJsonString(last_error_category) << "\", ";
+		json_report << "		\"value\": \"" << escapeJsonString(last_error_reason) << "\" ";
 		json_report << "	}]}, ";
 	}
 	json_report << "	\"tags\": { ";
