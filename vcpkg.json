@@ -4,11 +4,8 @@
   "dependencies": [
     "openssl",
     "zlib",
-    "boost-algorithm",
     { "name": "boost-asio", "default-features": false },
     "boost-beast",
-    "boost-bind",
-    "boost-exception",
     { "name": "boost-iostreams", "default-features": false, "features": ["zlib"] },
     "boost-locale",
     "boost-system"

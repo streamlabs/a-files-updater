@@ -417,8 +417,8 @@ void update_client::install_package(const std::string &packageName, std::string 
 	boost::system::error_code error;
 
 	std::string domainName;
-	boost::replace_all(url, "https://", "");
-	boost::replace_all(url, "http://", "");
+	replace_all(url, "https://", "");
+	replace_all(url, "http://", "");
 
 	for (size_t itr = 0; itr < url.size(); ++itr) {
 		if (url[itr] == '/' || url[itr] == '\\')
@@ -895,7 +895,7 @@ void update_client::process_manifest_results()
 			};
 
 			wait_for_blockers.expires_after(std::chrono::seconds(1));
-			wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
+			wait_for_blockers.async_wait([this](const boost::system::error_code &) { process_manifest_results(); });
 			return;
 		}
 
@@ -959,7 +959,7 @@ void update_client::process_manifest_results()
 			};
 
 			wait_for_blockers.expires_after(std::chrono::seconds(1));
-			wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
+			wait_for_blockers.async_wait([this](const boost::system::error_code &) { process_manifest_results(); });
 			return;
 		} else {
 			this->blocker_events->blocker_wait_complete();
@@ -1096,7 +1096,7 @@ void update_client::handle_manifest_result(std::shared_ptr<manifest_request<mani
 	this->downloader_events->downloader_preparing(true);
 
 	wait_for_blockers.expires_after(std::chrono::seconds(3));
-	wait_for_blockers.async_wait(boost::bind(&update_client::process_manifest_results, this));
+	wait_for_blockers.async_wait([this](const boost::system::error_code &) { process_manifest_results(); });
 
 	/* let time for Streamlabs Desktop process to quit and make files available for update */
 	handle_pids();
@@ -1202,23 +1202,23 @@ void update_client::next_manifest_entry(int index)
 
 template<> void update_http_request<manifest_body, false>::handle_download_canceled()
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_canceled, client_ctx, shared_from_this()));
+	boost::asio::post(client_ctx->io_ctx, [self = shared_from_this()] { self->client_ctx->handle_manifest_download_canceled(self); });
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_download_canceled()
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_canceled, client_ctx, shared_from_this()));
+	boost::asio::post(client_ctx->io_ctx, [self = shared_from_this()] { self->client_ctx->handle_file_download_canceled(self); });
 }
 
 template<> void update_http_request<manifest_body, false>::handle_download_error(const boost::system::error_code &error, const std::string &str)
 {
-	boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_manifest_download_error, client_ctx, shared_from_this(), error, str));
+	boost::asio::post(client_ctx->io_ctx, [self = shared_from_this(), error, str] { self->client_ctx->handle_manifest_download_error(self, error, str); });
 }
 
 template<> void update_http_request<http::dynamic_body, true>::handle_download_error(const boost::system::error_code &error, const std::string &str)
 {
 	try {
-		boost::asio::post(client_ctx->io_ctx, boost::bind(&update_client::handle_file_download_error, client_ctx, shared_from_this(), error, str));
+		boost::asio::post(client_ctx->io_ctx, [self = shared_from_this(), error, str] { self->client_ctx->handle_file_download_error(self, error, str); });
 	} catch (const std::bad_weak_ptr &) {
 		log_warn("Skipping file download error callback; request is already being torn down");
 	}
@@ -1234,7 +1234,7 @@ template<> void update_http_request<http::dynamic_body, true>::handle_result(upd
 {
 	try {
 		boost::asio::post(client_ctx->io_ctx,
-				  boost::bind(&update_client::handle_file_result, client_ctx, shared_from_this(), file_ctx, this->worker_id));
+				  [self = shared_from_this(), file_ctx, id = this->worker_id] { self->client_ctx->handle_file_result(self, file_ctx, id); });
 	} catch (const std::bad_weak_ptr &) {
 		log_warn("Skipping file result callback; request is already being torn down");
 		delete file_ctx; // handle_file_result would have owned this; free it since the post didn't happen
