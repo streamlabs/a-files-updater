@@ -12,6 +12,7 @@
 #include "utils.hpp"
 
 #include <memory>
+#include <thread>
 
 #include "crash-reporter.hpp"
 #include "update-parameters.hpp"
@@ -100,8 +101,8 @@ std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std:
 		json_report << "	}]}, ";
 	} else if (!ExceptionInfo && minidump_result.size() == 0) {
 		json_report << "	\"exception\": {\"values\":[{";
-		json_report << "		\"type\": \"" << last_error_category << "\", ";
-		json_report << "		\"value\": \"" << last_error_reason << "\" ";
+		json_report << "		\"type\": \"" << escapeJsonString(last_error_category) << "\", ";
+		json_report << "		\"value\": \"" << escapeJsonString(last_error_reason) << "\" ";
 		json_report << "	}]}, ";
 	}
 	json_report << "	\"tags\": { ";
@@ -307,6 +308,12 @@ int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump
 				++endpoint_iterator;
 				continue;
 			}
+
+			// Bound blocking send/recv (TLS handshake and the POST) so a stalled network can't hang the caller.
+			DWORD io_timeout_ms = 5000;
+			::setsockopt(ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&io_timeout_ms), sizeof(io_timeout_ms));
+			::setsockopt(ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&io_timeout_ms), sizeof(io_timeout_ms));
+
 			ssl_socket.lowest_layer().connect(endpoint_iterator->endpoint(), error);
 			if (error) {
 				++endpoint_iterator;
@@ -536,6 +543,19 @@ void save_exit_error(const std::string &category, const std::string &reason) noe
 		last_error_reason = reason;
 	} catch (...) {
 		// best effort; nothing to do if we can't even copy a string
+	}
+}
+
+void report_handled_error(const std::string &category, const std::string &reason) noexcept
+{
+	// handle_exit() is skipped on the success path, so send now instead of buffering; do it
+	// off-thread so a slow/hung connect can't block the updater (best-effort).
+	save_exit_error(category, reason);
+	std::string report = prepare_crash_report(nullptr, "");
+	try {
+		std::thread([report]() { send_crash_to_sentry_sync(report, false); }).detach();
+	} catch (...) {
+		send_crash_to_sentry_sync(report, false);
 	}
 }
 
