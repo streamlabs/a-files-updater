@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <map>
 
 #include "logger/log.h"
 #include "checksum-filters.hpp"
