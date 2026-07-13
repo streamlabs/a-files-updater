@@ -76,11 +76,17 @@ target_compile_options(slobs-updater
 	$<IF:$<CONFIG:Debug>,-MTd,-MT>
 	-W3 -Zi
 	-bigobj
+	# per-function/data COMDATs so /OPT:REF,ICF can drop the unused ones
+	-Gy -Gw
 )
 
 target_link_options(slobs-updater
 	PRIVATE
 	/DEBUG
+	# /DEBUG defaults /OPT to NOREF/NOICF; re-enable to strip static-lib dead code (PDB kept)
+	/OPT:REF
+	/OPT:ICF
+	/INCREMENTAL:NO
 )
 
 set_property(TARGET slobs-updater PROPERTY CXX_STANDARD 17)
