@@ -539,6 +539,14 @@ void save_exit_error(const std::string &category, const std::string &reason) noe
 	}
 }
 
+void report_handled_error(const std::string &category, const std::string &reason) noexcept
+{
+	// handle_exit() is skipped on the success path, so send now rather than buffering.
+	save_exit_error(category, reason);
+	std::string report = prepare_crash_report(nullptr, "");
+	send_crash_to_sentry_sync(report, false);
+}
+
 void print_stacktrace_sym(CONTEXT *ctx, std::ostringstream &report_stream) noexcept
 {
 	BOOL result;

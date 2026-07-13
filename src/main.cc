@@ -495,9 +495,12 @@ void callbacks_impl::repostionUI()
 		SetWindowPos(progress_worker, 0, s_padding, progress_top, main_w, s_basic_height, SWP_ASYNCWINDOWPOS);
 	if (buttons_top >= 0) {
 		int button_left = main_w + s_padding - s_button_width;
+		// Right-align cancel when it's the only visible button (the "Skip" during package install).
+		bool primary_visible = IsWindowVisible(continue_button) || IsWindowVisible(kill_button);
+		int cancel_left = primary_visible ? (button_left - s_button_width - s_padding) : button_left;
 		SetWindowPos(continue_button, 0, button_left, buttons_top, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
 		SetWindowPos(kill_button, 0, button_left, buttons_top, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
-		SetWindowPos(cancel_button, 0, button_left - s_button_width - s_padding, buttons_top, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
+		SetWindowPos(cancel_button, 0, cancel_left, buttons_top, s_button_width, s_basic_height, SWP_ASYNCWINDOWPOS);
 		//reapply rounded regions at scaled size
 		int cRounding = ScaleDPI(4, current_dpi);
 		HRGN rgn = CreateRoundRectRgn(0, 0, s_button_width, s_basic_height, cRounding, cRounding);
@@ -728,7 +731,7 @@ void callbacks_impl::installer_download_start(const std::string &packageName)
 	installer_download_progress(0);
 
 	std::wstring downloading_label = ConvertToUtf16WS(boost::locale::translate("Downloading required component: "));
-	downloading_label += fmt::to_wstring(packageName) + L"...";
+	downloading_label += ConvertToUtf16WS(packageName) + L"...";
 
 	HDC hdc = GetDC(frame);
 	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
@@ -777,16 +780,9 @@ void callbacks_impl::installer_package_failed(const std::string &packageName, co
 {
 	restore_cancel_button_text();
 
-	if (message.empty())
-		MessageBoxA(frame, ("WARNING: Streamlabs Desktop was unable to download/install the required '" + packageName + "' package.").c_str(),
-			    "Package Installation", MB_OK | MB_ICONWARNING);
-	else
-		MessageBoxA(
-			frame,
-			("WARNING: Streamlabs Desktop was unable to download/install the required '" + packageName + "' package.\nError: " + message).c_str(),
-			"Package Installation", MB_OK | MB_ICONWARNING);
-
-	log_info(("installer_package_failed, message = " + message).c_str());
+	// Redist isn't required for the update, so report silently instead of blocking the user.
+	log_error(("installer_package_failed, package = " + packageName + ", message = " + message).c_str());
+	report_handled_error("PackageInstallFailure", packageName + (message.empty() ? "" : (": " + message)));
 }
 
 void callbacks_impl::installer_run_file(const std::string &packageName, const std::string &startParams, const std::string &rawFileBin)
@@ -839,12 +835,17 @@ void callbacks_impl::installer_run_file(const std::string &packageName, const st
 				//MessageBoxA(frame, "A restart is required to complete the update.", "Package Installation", MB_OK | MB_ICONWARNING);
 			}
 			break;
+		case ERROR_PRODUCT_VERSION: // 1638: a newer redist is already installed
+		case ERROR_INSTALL_USEREXIT:
+		case ERROR_CANCELLED:
+			log_info("installer_run_file: '%s' skipped, benign exit code %d", packageName.c_str(), dwExitCode);
+			break;
 		default:
-			installer_package_failed(packageName, "");
+			installer_package_failed(packageName, "exit code " + std::to_string(dwExitCode));
 			break;
 		}
 
-		log_info("installer_run_file failed with error %d", dwExitCode);
+		log_info("installer_run_file finished with error %d", dwExitCode);
 	}
 }
 
@@ -1630,7 +1631,7 @@ BOOL HasInstalled_VC_redistx64()
 		boost::split(versions, version, boost::is_any_of("."));
 
 		// "Version"="14.50.35719.0"
-		if (versions.size() == 3) {
+		if (versions.size() >= 3) {
 			if (_wtoi(versions[0].c_str()) < 14)
 				return FALSE;
 
