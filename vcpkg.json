@@ -9,7 +9,7 @@
     "boost-beast",
     "boost-bind",
     "boost-exception",
-    "boost-iostreams",
+    { "name": "boost-iostreams", "default-features": false, "features": ["zlib"] },
     "boost-locale",
     "boost-system"
   ],
