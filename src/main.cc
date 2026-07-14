@@ -21,7 +21,6 @@
 #include <thread>
 #include <fstream>
 
-#include <boost/algorithm/string.hpp>
 #include <boost/locale.hpp>
 
 #include <json.hpp>
@@ -1628,7 +1627,12 @@ BOOL HasInstalled_VC_redistx64()
 
 	if (ret == ERROR_SUCCESS) {
 		std::vector<std::wstring> versions;
-		boost::split(versions, version, boost::is_any_of("."));
+		for (size_t start = 0, dot;; start = dot + 1) {
+			dot = version.find(L'.', start);
+			versions.push_back(version.substr(start, dot - start));
+			if (dot == std::wstring::npos)
+				break;
+		}
 
 		// "Version"="14.50.35719.0"
 		if (versions.size() >= 3) {

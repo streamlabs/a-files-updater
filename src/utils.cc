@@ -4,13 +4,11 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
-
-#include <boost/exception/all.hpp>
+#include <map>
 
 #include "logger/log.h"
 #include "checksum-filters.hpp"
 #include <openssl/evp.h>
-#include <boost/algorithm/string/replace.hpp>
 #include <boost/locale.hpp>
 #include <filesystem>
 
@@ -261,6 +259,14 @@ std::string urlencode(const std::string &url)
 	return ostream.str();
 }
 
+void replace_all(std::string &s, std::string_view from, std::string_view to)
+{
+	if (from.empty())
+		return;
+	for (size_t pos = 0; (pos = s.find(from, pos)) != std::string::npos; pos += to.size())
+		s.replace(pos, from.size(), to);
+}
+
 std::string fixup_uri(const std::string &source)
 {
 	std::string result(source);
@@ -269,10 +275,10 @@ std::string fixup_uri(const std::string &source)
 							  {')', "%29"}, {'*', "%2A"}, {'+', "%2B"}, {',', "%2C"}, {':', "%3A"},  {';', "%3B"},
 							  {'<', "%3C"}, {'=', "%3E"}, {'?', "%3F"}, {'@', "%40"}, {'[', "%5B"},  {']', "%5D"},
 							  {'^', "%5E"}, {'`', "%60"}, {'{', "%7B"}, {'|', "%7C"}, {'}', "%7D"},  {'~', "%7E"}};
-	boost::algorithm::replace_all(result, "\\", "/");
-	boost::algorithm::replace_all(result, "%", "%25");
+	replace_all(result, "\\", "/");
+	replace_all(result, "%", "%25");
 	for (const auto &pair : urlEncodeMap) {
-		boost::algorithm::replace_all(result, std::string(1, pair.first), pair.second);
+		replace_all(result, std::string(1, pair.first), pair.second);
 	}
 
 	return result;
@@ -290,11 +296,11 @@ std::string unfixup_uri(const std::string &source)
 
 	// Iterating over each encoded sequence in the map
 	for (const auto &pair : urlDecodeMap) {
-		boost::algorithm::replace_all(result, pair.first, std::string(1, pair.second));
+		replace_all(result, pair.first, std::string(1, pair.second));
 	}
 
 	// Replacing encoded backslash
-	boost::algorithm::replace_all(result, "/", "\\");
+	replace_all(result, "/", "\\");
 
 	return result;
 }
@@ -304,8 +310,6 @@ std::string calculate_files_checksum_safe(const fs::path &path)
 	std::string checksum = "";
 	try {
 		checksum = calculate_files_checksum(path);
-	} catch (const boost::exception &e) {
-		log_warn("Failed to calculate checksum of local file. Exception: %s", boost::diagnostic_information(e).c_str());
 	} catch (const std::exception &e) {
 		log_warn("Failed to calculate checksum of local file. std::exception: %s", e.what());
 	} catch (...) {
