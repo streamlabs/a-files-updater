@@ -237,9 +237,12 @@ std::string encimpl(std::string::value_type v)
 	if (isascii(v))
 		return std::string() + v;
 
-	std::ostringstream enc;
-	enc << '%' << std::setw(2) << std::setfill('0') << std::hex << std::uppercase << int(static_cast<unsigned char>(v));
-	return enc.str();
+	static const char hex_chars[] = "0123456789ABCDEF";
+	unsigned char uc = static_cast<unsigned char>(v);
+	std::string enc = "%";
+	enc.push_back(hex_chars[uc >> 4]);
+	enc.push_back(hex_chars[uc & 0x0F]);
+	return enc;
 }
 
 std::string urlencode(const std::string &url)
@@ -320,7 +323,7 @@ std::string calculate_files_checksum_safe(const fs::path &path)
 
 std::string calculate_files_checksum(const fs::path &path)
 {
-	std::ostringstream hex_digest;
+	std::string hex_digest;
 	unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
 
 	std::ifstream file(path, std::ios::in | std::ios::binary);
@@ -357,14 +360,15 @@ std::string calculate_files_checksum(const fs::path &path)
 
 		file.close();
 
-		hex_digest << std::nouppercase << std::setfill('0') << std::hex;
-
+		static const char hex_chars[] = "0123456789abcdef";
+		hex_digest.reserve(SHA256_DIGEST_LENGTH * 2);
 		for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-			hex_digest << std::setw(2) << static_cast<unsigned int>(hash[i]);
+			hex_digest.push_back(hex_chars[hash[i] >> 4]);
+			hex_digest.push_back(hex_chars[hash[i] & 0x0F]);
 		}
 	}
 
-	return hex_digest.str();
+	return hex_digest;
 }
 
 std::vector<char> get_messages_callback(std::string const &file_name, std::string const &encoding)

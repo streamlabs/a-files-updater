@@ -36,6 +36,7 @@ template<class Body, bool IncludeVersion> struct update_http_request : public st
 	int worker_id;
 	update_client *client_ctx;
 	std::string target;
+	std::string expected_hash;
 	std::string used_cdn_node_address;
 
 	/* We used to support http and then I realized
