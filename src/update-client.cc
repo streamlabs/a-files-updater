@@ -1023,6 +1023,7 @@ void update_client::start_downloading_files()
 		++this->active_workers;
 
 		auto request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, fixup_uri((*this->manifest_iterator).first) + ".gz", i);
+		request_ctx->expected_hash = (*this->manifest_iterator).second.hash_sum;
 
 		request_ctx->start_connect();
 
@@ -1130,18 +1131,23 @@ update_file_t::update_file_t(const fs::path &file_path) : file_path(file_path), 
 
 void update_client::handle_file_result(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, update_file_t *file_ctx, int index)
 {
-	(void)request_ctx; // held only to keep the request alive across the async hop
 	auto &filter = file_ctx->checksum_filter;
 
 	try {
 		file_ctx->output_chain.reset();
 
-		std::ostringstream hex_digest;
-
-		hex_digest << std::nouppercase << std::setfill('0') << std::hex;
-
+		static const char hex_chars[] = "0123456789abcdef";
+		std::string hex_digest;
+		hex_digest.reserve(SHA256_DIGEST_LENGTH * 2);
 		for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-			hex_digest << std::setw(2) << static_cast<unsigned int>(filter.digest[i]);
+			hex_digest.push_back(hex_chars[filter.digest[i] >> 4]);
+			hex_digest.push_back(hex_chars[filter.digest[i] & 0x0F]);
+		}
+
+		const std::string &expected = request_ctx->expected_hash;
+		if (!expected.empty() && hex_digest != expected) {
+			log_error("Downloaded file checksum mismatch for %s, expected %s, got %s", request_ctx->target.c_str(), expected.c_str(),
+				  hex_digest.c_str());
 		}
 	} catch (...) {
 	}
@@ -1186,6 +1192,7 @@ void update_client::next_manifest_entry(int index)
 				manifest_lock.unlock();
 
 				auto request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, fixup_uri(entry.first) + ".gz", index);
+				request_ctx->expected_hash = entry.second.hash_sum;
 
 				request_ctx->start_connect();
 			}

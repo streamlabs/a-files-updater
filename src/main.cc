@@ -980,18 +980,19 @@ int callbacks_impl::disk_space_waiting_for(const std::wstring &app_dir, size_t a
 
 		std::transform(app_disk_name.begin(), app_disk_name.end(), app_disk_name.begin(), ::toupper);
 		std::transform(temp_disk_name.begin(), temp_disk_name.end(), temp_disk_name.begin(), ::toupper);
-		std::wostringstream processes_list;
-		processes_list.precision(2);
-		processes_list << std::fixed;
+		std::wostringstream free_space_text;
+		free_space_text.imbue(std::locale::classic());
+		free_space_text.precision(2);
+		free_space_text << std::fixed;
 
 		if (app_disk_name != temp_disk_name) {
-			processes_list << L"" << app_disk_name << L"[APP] " << app_dir_free_space / 1024.0 / 1024.0 << L" Mb free";
-			processes_list << L"\r\n" << L"" << temp_disk_name << L"[TEMP]" << temp_dir_free_space / 1024.0 / 1024.0 << L" Mb free";
+			free_space_text << app_disk_name << L"[APP] " << app_dir_free_space / 1024.0 / 1024.0 << L" Mb free";
+			free_space_text << L"\r\n" << temp_disk_name << L"[TEMP]" << temp_dir_free_space / 1024.0 / 1024.0 << L" Mb free";
 		} else {
-			processes_list << L"" << app_disk_name << L" " << app_dir_free_space / 1024.0 / 1024.0 << L" Mb free";
+			free_space_text << app_disk_name << L" " << app_dir_free_space / 1024.0 / 1024.0 << L" Mb free";
 		}
 		if (active_panel)
-			active_panel->set_text(processes_list.str().c_str());
+			active_panel->set_text(free_space_text.str().c_str());
 	}
 	return ret;
 }
