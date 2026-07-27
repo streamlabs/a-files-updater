@@ -1,6 +1,8 @@
 build 
 test/node_modules
 test/yarn.lock
+test/.pnp.*
+test/.yarn/
 test/testfiles
 /.vscode
 /build*
@@ -9,3 +11,7 @@ test/testfiles
 *messages.mo
 resources/slobs-updater.exe.manifest
 resources/slobs-updater.rc
+
+# Local dev / test files
+CLAUDE.md
+.claude/

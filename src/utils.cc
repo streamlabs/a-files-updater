@@ -4,12 +4,11 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
-
-#include <boost/exception/all.hpp>
+#include <map>
 
 #include "logger/log.h"
 #include "checksum-filters.hpp"
-#include <boost/algorithm/string/replace.hpp>
+#include <openssl/evp.h>
 #include <boost/locale.hpp>
 #include <filesystem>
 
@@ -238,9 +237,12 @@ std::string encimpl(std::string::value_type v)
 	if (isascii(v))
 		return std::string() + v;
 
-	std::ostringstream enc;
-	enc << '%' << std::setw(2) << std::setfill('0') << std::hex << std::uppercase << int(static_cast<unsigned char>(v));
-	return enc.str();
+	static const char hex_chars[] = "0123456789ABCDEF";
+	unsigned char uc = static_cast<unsigned char>(v);
+	std::string enc = "%";
+	enc.push_back(hex_chars[uc >> 4]);
+	enc.push_back(hex_chars[uc & 0x0F]);
+	return enc;
 }
 
 std::string urlencode(const std::string &url)
@@ -260,6 +262,14 @@ std::string urlencode(const std::string &url)
 	return ostream.str();
 }
 
+void replace_all(std::string &s, std::string_view from, std::string_view to)
+{
+	if (from.empty())
+		return;
+	for (size_t pos = 0; (pos = s.find(from, pos)) != std::string::npos; pos += to.size())
+		s.replace(pos, from.size(), to);
+}
+
 std::string fixup_uri(const std::string &source)
 {
 	std::string result(source);
@@ -268,10 +278,10 @@ std::string fixup_uri(const std::string &source)
 							  {')', "%29"}, {'*', "%2A"}, {'+', "%2B"}, {',', "%2C"}, {':', "%3A"},  {';', "%3B"},
 							  {'<', "%3C"}, {'=', "%3E"}, {'?', "%3F"}, {'@', "%40"}, {'[', "%5B"},  {']', "%5D"},
 							  {'^', "%5E"}, {'`', "%60"}, {'{', "%7B"}, {'|', "%7C"}, {'}', "%7D"},  {'~', "%7E"}};
-	boost::algorithm::replace_all(result, "\\", "/");
-	boost::algorithm::replace_all(result, "%", "%25");
+	replace_all(result, "\\", "/");
+	replace_all(result, "%", "%25");
 	for (const auto &pair : urlEncodeMap) {
-		boost::algorithm::replace_all(result, std::string(1, pair.first), pair.second);
+		replace_all(result, std::string(1, pair.first), pair.second);
 	}
 
 	return result;
@@ -289,11 +299,11 @@ std::string unfixup_uri(const std::string &source)
 
 	// Iterating over each encoded sequence in the map
 	for (const auto &pair : urlDecodeMap) {
-		boost::algorithm::replace_all(result, pair.first, std::string(1, pair.second));
+		replace_all(result, pair.first, std::string(1, pair.second));
 	}
 
 	// Replacing encoded backslash
-	boost::algorithm::replace_all(result, "/", "\\");
+	replace_all(result, "/", "\\");
 
 	return result;
 }
@@ -303,8 +313,6 @@ std::string calculate_files_checksum_safe(const fs::path &path)
 	std::string checksum = "";
 	try {
 		checksum = calculate_files_checksum(path);
-	} catch (const boost::exception &e) {
-		log_warn("Failed to calculate checksum of local file. Exception: %s", boost::diagnostic_information(e).c_str());
 	} catch (const std::exception &e) {
 		log_warn("Failed to calculate checksum of local file. std::exception: %s", e.what());
 	} catch (...) {
@@ -315,38 +323,52 @@ std::string calculate_files_checksum_safe(const fs::path &path)
 
 std::string calculate_files_checksum(const fs::path &path)
 {
-	std::ostringstream hex_digest;
+	std::string hex_digest;
 	unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
 
 	std::ifstream file(path, std::ios::in | std::ios::binary);
 	if (file.is_open()) {
-		SHA256_CTX sha256;
-		SHA256_Init(&sha256);
+		EVP_MD_CTX *sha256 = EVP_MD_CTX_new();
+		if (!sha256 || EVP_DigestInit_ex(sha256, EVP_sha256(), nullptr) != 1) {
+			log_warn("Failed to initialize SHA-256 context");
+			EVP_MD_CTX_free(sha256);
+			return "";
+		}
 
 		unsigned char buffer[4096];
 		while (true) {
 			file.read((char *)buffer, 4096);
 			std::streamsize read_byte = file.gcount();
 			if (read_byte != 0) {
-				SHA256_Update(&sha256, buffer, read_byte);
+				if (EVP_DigestUpdate(sha256, buffer, read_byte) != 1) {
+					log_warn("SHA-256 update failed");
+					EVP_MD_CTX_free(sha256);
+					return "";
+				}
 			}
 			if (!file.good()) {
 				break;
 			}
 		}
 
-		SHA256_Final(hash, &sha256);
+		if (EVP_DigestFinal_ex(sha256, hash, nullptr) != 1) {
+			log_warn("SHA-256 finalization failed");
+			EVP_MD_CTX_free(sha256);
+			return "";
+		}
+		EVP_MD_CTX_free(sha256);
 
 		file.close();
 
-		hex_digest << std::nouppercase << std::setfill('0') << std::hex;
-
+		static const char hex_chars[] = "0123456789abcdef";
+		hex_digest.reserve(SHA256_DIGEST_LENGTH * 2);
 		for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-			hex_digest << std::setw(2) << static_cast<unsigned int>(hash[i]);
+			hex_digest.push_back(hex_chars[hash[i] >> 4]);
+			hex_digest.push_back(hex_chars[hash[i] & 0x0F]);
 		}
 	}
 
-	return hex_digest.str();
+	return hex_digest;
 }
 
 std::vector<char> get_messages_callback(std::string const &file_name, std::string const &encoding)

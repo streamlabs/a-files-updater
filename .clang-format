@@ -1,4 +1,4 @@
-# please use clang-format version 8 or later
+# please use clang-format version 19 or later
 
 Standard: Cpp11
 AccessModifierOffset: -8

@@ -1,6 +1,8 @@
 #pragma once
 #include "update-http-request.hpp"
 
+#include <atomic>
+#include <cstdint>
 #include <fstream>
 #include "utils.hpp"
 #include "checksum-filters.hpp"
@@ -91,7 +93,7 @@ struct update_client {
 	manifest_map_t::const_iterator manifest_iterator;
 
 	resolver_type resolver;
-	ssl::context ssl_context{ssl::context::method::sslv23_client};
+	ssl::context ssl_context{ssl::context::method::tls_client};
 
 	resolver_type::results_type endpoints;
 	std::map<std::string, std::pair<int, int>> endpoint_fails_counts;
@@ -101,9 +103,13 @@ struct update_client {
 
 	std::vector<std::thread> thread_pool;
 
-	boost::asio::deadline_timer wait_for_blockers;
+	boost::asio::steady_timer wait_for_blockers;
 	bool show_user_blockers_list;
 	std::wstring process_list_text;
+
+	std::atomic<bool> install_packages_cancelled{false};
+	boost::asio::steady_timer package_download_timer;
+	std::atomic<uintptr_t> active_package_native_socket{~uintptr_t(0)};
 
 	enum class blocker_phase { virtualcam, generic };
 	blocker_phase current_blocker_phase{blocker_phase::virtualcam};
@@ -112,9 +118,11 @@ struct update_client {
 	std::string download_abort_message;
 	boost::system::error_code download_abort_error;
 
-	boost::asio::deadline_timer domain_resolve_timeout;
+	boost::asio::steady_timer domain_resolve_timeout;
 	void check_resolve_timeout_callback_err(const boost::system::error_code &error);
 	std::mutex handle_error_mutex;
+
+	void cancel_install_packages();
 
 private:
 	// [packageName] = { url, params }
@@ -122,22 +130,24 @@ private:
 
 public:
 	void handle_network_error(const boost::system::error_code &error, const std::string &str);
-	void handle_file_download_error(file_request<http::dynamic_body> *request_ctx, const boost::system::error_code &error, const std::string &str);
-	void handle_file_download_canceled(file_request<http::dynamic_body> *request_ctx);
+	void handle_file_download_error(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, const boost::system::error_code &error,
+					const std::string &str);
+	void handle_file_download_canceled(std::shared_ptr<file_request<http::dynamic_body>> request_ctx);
 
-	void handle_manifest_download_error(manifest_request<manifest_body> *request_ctx, const boost::system::error_code &error, const std::string &str);
-	void handle_manifest_download_canceled(manifest_request<manifest_body> *request_ctx);
+	void handle_manifest_download_error(std::shared_ptr<manifest_request<manifest_body>> request_ctx, const boost::system::error_code &error,
+					    const std::string &str);
+	void handle_manifest_download_canceled(std::shared_ptr<manifest_request<manifest_body>> request_ctx);
 
 	//manifest
 	void handle_resolve(const boost::system::error_code &error, resolver_type::results_type results);
-	void handle_manifest_result(manifest_request<manifest_body> *request_ctx);
+	void handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content);
 	void process_manifest_results();
 	void checkup_files(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers, int from, int to);
 	void checkup_manifest(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers);
 
 	//files
 	void start_downloading_files();
-	void handle_file_result(file_request<http::dynamic_body> *request_ctx, update_file_t *file_ctx, int index);
+	void handle_file_result(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, update_file_t *file_ctx, int index);
 	void next_manifest_entry(int index);
 	void install_package(const std::string &packageName, std::string url, const std::string &startParams);
 	bool check_disk_space();

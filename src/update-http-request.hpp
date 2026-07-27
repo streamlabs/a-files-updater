@@ -1,18 +1,18 @@
 ﻿#pragma once
 
 #include <string>
+#include <chrono>
+#include <atomic>
+#include <memory>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl/error.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/beast.hpp>
-#include <boost/bind/bind.hpp>
 #include <boost/iostreams/chain.hpp>
 #include <boost/iostreams/device/file_descriptor.hpp>
 #include <boost/iostreams/filter/gzip.hpp>
 #include <boost/iostreams/traits.hpp>
-#include <boost/exception/all.hpp>
-#include <boost/algorithm/string/replace.hpp>
 #include <boost/locale.hpp>
 
 namespace asio = boost::asio;
@@ -27,7 +27,7 @@ struct update_file_t;
 
 using manifest_body = http::basic_dynamic_body<beast::flat_buffer>;
 
-template<class Body, bool IncludeVersion> struct update_http_request {
+template<class Body, bool IncludeVersion> struct update_http_request : public std::enable_shared_from_this<update_http_request<Body, IncludeVersion>> {
 	update_http_request(update_client *client_ctx, const std::string &target, const int id);
 	~update_http_request();
 
@@ -36,6 +36,7 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 	int worker_id;
 	update_client *client_ctx;
 	std::string target;
+	std::string expected_hash;
 	std::string used_cdn_node_address;
 
 	/* We used to support http and then I realized
@@ -53,15 +54,18 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 
 	void set_sni_hostname();
 
-	/* We need way to detect stuck connection.
-	*  For that we use boost deadline timer what can limit
-	*  time for each step of file downloader connection.
-	*  Also it limits a recieve buffer so a timer limit a too slow fill of the buffer.
+	/* We need a way to detect a stuck connection.
+	*  For that we use a steady timer that limits the
+	*  time for each step of the file downloader connection.
+	*  It also bounds the receive buffer, so the timer limits an overly slow fill of the buffer.
 	*/
-	boost::asio::deadline_timer deadline;
+	boost::asio::steady_timer deadline;
 	int deadline_default_timeout = 5;
 	bool deadline_reached = false;
 	int retries = 0;
+
+	// Defense-in-depth: lets an in-flight Asio handler early-out if it runs during teardown
+	std::atomic<bool> destroyed{false};
 
 	void check_deadline_callback_err(const boost::system::error_code &error);
 	void switch_deadline_on();
@@ -72,7 +76,7 @@ template<class Body, bool IncludeVersion> struct update_http_request {
 	void handle_result(update_file_t *file_ctx);
 
 	void start_connect();
-	void handle_connect(const boost::system::error_code &error, tcp::resolver::results_type::iterator ep);
+	void handle_connect(const boost::system::error_code &error);
 	void handle_handshake(const boost::system::error_code &error);
 	void handle_request(boost::system::error_code &error, size_t bytes);
 	void handle_response_header(boost::system::error_code &error, size_t bytes);
@@ -116,16 +120,21 @@ update_http_request<Body, IncludeVersion>::update_http_request(update_client *cl
 
 	response_parser.body_limit(std::numeric_limits<unsigned long long>::max());
 
-	deadline.expires_at(boost::posix_time::pos_infin);
+	deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 }
 
 template<class Body, bool IncludeVersion> update_http_request<Body, IncludeVersion>::~update_http_request()
 {
+	destroyed.store(true, std::memory_order_release);
 	deadline.cancel();
 }
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::check_deadline_callback_err(const boost::system::error_code &error)
 {
+	if (destroyed.load(std::memory_order_acquire)) {
+		return;
+	}
+
 	if (error) {
 		if (error == boost::asio::error::operation_aborted) {
 			return;
@@ -135,33 +144,43 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		}
 	}
 
-	if (deadline.expires_at() <= boost::asio::deadline_timer::traits_type::now()) {
+	if (deadline.expiry() <= std::chrono::steady_clock::now()) {
 		log_info("Timeout for file download operation triggered for %s", target.c_str());
 		deadline_reached = true;
 
 		try {
-			deadline.expires_at(boost::posix_time::pos_infin);
+			deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 		} catch (...) {
-			log_error("Got error canceling timer");
+			log_error("Got error resetting deadline timer");
 		}
 
+		// close() (not shutdown()) - only close cancels a pending overlapped read/connect
+		// on Windows, so the stalled handler actually fires and the worker is not lost.
 		boost::system::error_code ignored_ec;
-		ssl_socket.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored_ec);
+		ssl_socket.lowest_layer().close(ignored_ec);
 	} else {
 		// Put the actor back to sleep.
-		deadline.async_wait(bind(&update_http_request<Body, IncludeVersion>::check_deadline_callback_err, this, std::placeholders::_1));
+		try {
+			auto self = shared_from_this();
+			deadline.async_wait([self](const boost::system::error_code &ec) { self->check_deadline_callback_err(ec); });
+		} catch (const std::bad_weak_ptr &) {
+			// Object no longer owned by shared_ptr - do not re-arm
+		}
 	}
 }
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::switch_deadline_on()
 {
-	deadline.expires_from_now(boost::posix_time::seconds(deadline_default_timeout));
+	deadline.expires_after(std::chrono::seconds(deadline_default_timeout));
 	check_deadline_callback_err(make_error_code(boost::system::errc::success));
 }
 
 template<class Body, bool IncludeVersion>
 bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const boost::system::error_code &error, const std::string &message)
 {
+	if (destroyed.load(std::memory_order_acquire)) {
+		return true;
+	}
 	deadline.cancel();
 
 	if (client_ctx->update_download_aborted) {
@@ -181,7 +200,8 @@ bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const b
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::start_connect()
 {
-	auto connect_handler = [this](auto e, auto b) { this->handle_connect(e, b); };
+	auto self = shared_from_this();
+	auto connect_handler = [self](auto e, auto) { self->handle_connect(e); };
 
 	switch_deadline_on();
 
@@ -205,8 +225,7 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 	}
 }
 
-template<class Body, bool IncludeVersion>
-void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error, tcp::resolver::results_type::iterator ep)
+template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::handle_connect(const boost::system::error_code &error)
 {
 	if (handle_callback_precheck(error, "connect to host")) {
 		return;
@@ -214,7 +233,8 @@ void update_http_request<Body, IncludeVersion>::handle_connect(const boost::syst
 
 	set_sni_hostname();
 
-	auto handshake_handler = [this](auto e) { this->handle_handshake(e); };
+	auto self = shared_from_this();
+	auto handshake_handler = [self](auto e) { self->handle_handshake(e); };
 
 	switch_deadline_on();
 
@@ -228,7 +248,8 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		return;
 	}
 
-	auto request_handler = [this](auto e, auto b) { this->handle_request(e, b); };
+	auto self = shared_from_this();
+	auto request_handler = [self](auto e, auto b) { self->handle_request(e, b); };
 
 	switch_deadline_on();
 
@@ -241,7 +262,8 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		return;
 	}
 
-	auto read_handler = [this](auto i, auto e) { this->handle_response_header(i, e); };
+	auto self = shared_from_this();
+	auto read_handler = [self](auto i, auto e) { self->handle_response_header(i, e); };
 
 	switch_deadline_on();
 

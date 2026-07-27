@@ -2,7 +2,7 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
-#include <boost/bind/bind.hpp>
+#include <list>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl/error.hpp>
 #include <boost/asio/ssl/stream.hpp>
@@ -12,6 +12,7 @@
 #include "utils.hpp"
 
 #include <memory>
+#include <thread>
 
 #include "crash-reporter.hpp"
 #include "update-parameters.hpp"
@@ -100,8 +101,8 @@ std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std:
 		json_report << "	}]}, ";
 	} else if (!ExceptionInfo && minidump_result.size() == 0) {
 		json_report << "	\"exception\": {\"values\":[{";
-		json_report << "		\"type\": \"" << last_error_category << "\", ";
-		json_report << "		\"value\": \"" << last_error_reason << "\" ";
+		json_report << "		\"type\": \"" << escapeJsonString(last_error_category) << "\", ";
+		json_report << "		\"value\": \"" << escapeJsonString(last_error_reason) << "\" ";
 		json_report << "	}]}, ";
 	}
 	json_report << "	\"tags\": { ";
@@ -292,19 +293,28 @@ int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump
 				    boost::asio::ssl::context::no_tlsv1 | boost::asio::ssl::context::no_tlsv1_1);
 		context.set_default_verify_paths();
 
-		boost::asio::io_service io_service;
-		boost::asio::ssl::stream<boost::asio::ip::tcp::socket> ssl_socket(io_service, context);
+		boost::asio::io_context io_context;
+		boost::asio::ssl::stream<boost::asio::ip::tcp::socket> ssl_socket(io_context, context);
 
-		tcp::resolver resolver(io_service);
-		tcp::resolver::query query(host, protocol);
-		tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
-		tcp::resolver::iterator end;
+		tcp::resolver resolver(io_context);
+		tcp::resolver::results_type endpoints = resolver.resolve(host, protocol);
+		auto endpoint_iterator = endpoints.begin();
 
-		tcp::socket socket(io_service);
 		boost::system::error_code error = boost::asio::error::host_not_found;
-		while (error && endpoint_iterator != end) {
+		while (error && endpoint_iterator != endpoints.end()) {
 			ssl_socket.lowest_layer().close();
-			boost::asio::connect(ssl_socket.lowest_layer(), endpoint_iterator, error);
+			ssl_socket.lowest_layer().open(endpoint_iterator->endpoint().protocol(), error);
+			if (error) {
+				++endpoint_iterator;
+				continue;
+			}
+
+			// Bound blocking send/recv (TLS handshake and the POST) so a stalled network can't hang the caller.
+			DWORD io_timeout_ms = 5000;
+			::setsockopt(ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&io_timeout_ms), sizeof(io_timeout_ms));
+			::setsockopt(ssl_socket.lowest_layer().native_handle(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&io_timeout_ms), sizeof(io_timeout_ms));
+
+			ssl_socket.lowest_layer().connect(endpoint_iterator->endpoint(), error);
 			if (error) {
 				++endpoint_iterator;
 				continue;
@@ -533,6 +543,19 @@ void save_exit_error(const std::string &category, const std::string &reason) noe
 		last_error_reason = reason;
 	} catch (...) {
 		// best effort; nothing to do if we can't even copy a string
+	}
+}
+
+void report_handled_error(const std::string &category, const std::string &reason) noexcept
+{
+	// handle_exit() is skipped on the success path, so send now instead of buffering; do it
+	// off-thread so a slow/hung connect can't block the updater (best-effort).
+	save_exit_error(category, reason);
+	std::string report = prepare_crash_report(nullptr, "");
+	try {
+		std::thread([report]() { send_crash_to_sentry_sync(report, false); }).detach();
+	} catch (...) {
+		send_crash_to_sentry_sync(report, false);
 	}
 }
 

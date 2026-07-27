@@ -23,15 +23,10 @@ else()
 	set(RELEASE_VERSION_COMMA "0,0,0,0")
 endif()
 
-set(ZLIB_ROOT ${CMAKE_DEPS_DIR}/zlib)
-set(OPENSSL_ROOT_DIR ${CMAKE_DEPS_DIR}/openssl)
-set(BOOST_ROOT ${CMAKE_DEPS_DIR}/boost)
+# zlib, openssl, and boost all come from vcpkg (see vcpkg.json).
 
-# set(OPENSSL_USE_STATIC_LIBS TRUE)
-# set(OPENSSL_MSVC_STATIC_RT TRUE)
-# find_package(OpenSSL REQUIRED )
-# message(STATUS "${OPENSSL_LIBRARIES}")
-set(OPENSSL_LIBRARIES ${OPENSSL_ROOT_DIR}/lib/libssl.lib ${OPENSSL_ROOT_DIR}/lib/libcrypto.lib)
+set(OPENSSL_USE_STATIC_LIBS TRUE)
+find_package(OpenSSL REQUIRED)
 
 option(USE_STREAMLABS_RESOURCE "Embed and use the streamlabs resource file in the resulting executable" ON)
 
@@ -55,12 +50,10 @@ set(Boost_DEBUG OFF)
 set(Boost_RELEASE ON)
 
 find_package(Boost
-	1.79.0 EXACT
 	REQUIRED
 	COMPONENTS
 	iostreams
 	system
-	date_time
 	locale
 )
 INCLUDE_DIRECTORIES(${Boost_INCLUDE_DIR})
@@ -83,11 +76,18 @@ target_compile_options(slobs-updater
 	$<IF:$<CONFIG:Debug>,-MTd,-MT>
 	-W3 -Zi
 	-bigobj
+	# per-function/data COMDATs so /OPT:REF,ICF can drop the unused ones (non-Debug only)
+	$<$<NOT:$<CONFIG:Debug>>:-Gy>
+	$<$<NOT:$<CONFIG:Debug>>:-Gw>
 )
 
 target_link_options(slobs-updater
 	PRIVATE
 	/DEBUG
+	# /DEBUG defaults /OPT to NOREF/NOICF; re-enable for non-Debug to strip static-lib dead code (PDB kept)
+	$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
+	$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
+	$<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>
 )
 
 set_property(TARGET slobs-updater PROPERTY CXX_STANDARD 17)
@@ -97,7 +97,6 @@ target_include_directories(slobs-updater
 	PRIVATE src/argtable
 	PRIVATE src/fmt
 	PRIVATE ${CMAKE_BINARY_DIR}/_deps/nlohmann_json
-	SYSTEM PUBLIC ${OPENSSL_ROOT_DIR}/include
 )
 
 target_link_libraries(slobs-updater
@@ -108,8 +107,8 @@ target_link_libraries(slobs-updater
 	Boost::iostreams
 	Boost::locale
 	Boost::system
-	Boost::date_time
-	${OPENSSL_LIBRARIES}
+	OpenSSL::SSL
+	OpenSSL::Crypto
 	ZLIB::ZLIB
 
 	# -MANIFESTUAC:level=requireAdministrator

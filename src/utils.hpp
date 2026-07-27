@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <unordered_map>
 #include <vector>
+#include <string>
+#include <string_view>
 
 #ifndef USER_DEFAULT_SCREEN_DPI
 #define USER_DEFAULT_SCREEN_DPI 96
@@ -50,6 +52,8 @@ std::string unfixup_uri(const std::string &source);
 std::string fixup_uri(const std::string &source);
 std::string encimpl(std::string::value_type v);
 std::string urlencode(const std::string &url);
+
+void replace_all(std::string &s, std::string_view from, std::string_view to);
 
 std::string calculate_files_checksum(const fs::path &path);
 std::string calculate_files_checksum_safe(const fs::path &path);
