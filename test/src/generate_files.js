@@ -281,7 +281,7 @@ async function generate_server_dir(testinfo) {
         "- Removed Trovo (platform shut down).\n" +
         "- Bug fixes: NDI, recording, and multistreaming.\n" +
         "\n" +
-        "v1.21.6 - MacOS oriented release\n" +
+        "v1.21.6 - macOS oriented release\n" +
         "- Hardware encoding, transitions, bitrate display, and themes.\n" +
         "\n" +
         "v1.21.4\n" +

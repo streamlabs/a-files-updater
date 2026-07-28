@@ -249,16 +249,19 @@ std::string to_hex(const unsigned char *data, size_t len, bool uppercase)
 
 std::string encimpl(std::string::value_type v)
 {
-	if (isascii(v))
-		return std::string() + v;
+	const unsigned char uc = static_cast<unsigned char>(v);
 
-	unsigned char uc = static_cast<unsigned char>(v);
+	if (isascii(uc))
+		return std::string(1, v);
+
 	return "%" + to_hex(&uc, 1, true);
 }
 
 std::string urlencode(const std::string &url)
 {
 	std::string result;
+	result.reserve(url.size());
+
 	for (char c : url)
 		result += encimpl(c);
 
