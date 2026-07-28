@@ -232,34 +232,37 @@ fs::path prepare_file_path(const fs::path &base, const std::string &target)
 	return file_path;
 }
 
+std::string to_hex(const unsigned char *data, size_t len, bool uppercase)
+{
+	static const char lower[] = "0123456789abcdef";
+	static const char upper[] = "0123456789ABCDEF";
+	const char *hex = uppercase ? upper : lower;
+
+	std::string out;
+	out.reserve(len * 2);
+	for (size_t i = 0; i < len; ++i) {
+		out.push_back(hex[data[i] >> 4]);
+		out.push_back(hex[data[i] & 0x0F]);
+	}
+	return out;
+}
+
 std::string encimpl(std::string::value_type v)
 {
 	if (isascii(v))
 		return std::string() + v;
 
-	static const char hex_chars[] = "0123456789ABCDEF";
 	unsigned char uc = static_cast<unsigned char>(v);
-	std::string enc = "%";
-	enc.push_back(hex_chars[uc >> 4]);
-	enc.push_back(hex_chars[uc & 0x0F]);
-	return enc;
+	return "%" + to_hex(&uc, 1, true);
 }
 
 std::string urlencode(const std::string &url)
 {
-	const std::string::const_iterator start = url.begin();
+	std::string result;
+	for (char c : url)
+		result += encimpl(c);
 
-	std::vector<std::string> qstrs;
-
-	std::transform(start, url.end(), std::back_inserter(qstrs), encimpl);
-
-	std::ostringstream ostream;
-
-	for (auto const &i : qstrs) {
-		ostream << i;
-	}
-
-	return ostream.str();
+	return result;
 }
 
 void replace_all(std::string &s, std::string_view from, std::string_view to)
@@ -360,12 +363,7 @@ std::string calculate_files_checksum(const fs::path &path)
 
 		file.close();
 
-		static const char hex_chars[] = "0123456789abcdef";
-		hex_digest.reserve(SHA256_DIGEST_LENGTH * 2);
-		for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-			hex_digest.push_back(hex_chars[hash[i] >> 4]);
-			hex_digest.push_back(hex_chars[hash[i] & 0x0F]);
-		}
+		hex_digest = to_hex(hash, SHA256_DIGEST_LENGTH);
 	}
 
 	return hex_digest;
@@ -433,5 +431,12 @@ void setup_locale()
 	info.variant = properties.variant();
 
 	std::locale real_locale(base_locale, blg::create_messages_facet<char>(info));
+
+	/* Confine boost::locale to message translation only. Keep classic (C) numeric
+	 * facets so std stream/number formatting stays locale-independent and thread-safe:
+	 * boost's numeric facets triggered an MSVC CRT locale race when download/checksum
+	 * workers formatted numbers concurrently. */
+	real_locale = std::locale(real_locale, std::locale::classic(), std::locale::numeric);
+
 	std::locale::global(real_locale);
 }

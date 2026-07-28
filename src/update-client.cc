@@ -1136,13 +1136,7 @@ void update_client::handle_file_result(std::shared_ptr<file_request<http::dynami
 	try {
 		file_ctx->output_chain.reset();
 
-		static const char hex_chars[] = "0123456789abcdef";
-		std::string hex_digest;
-		hex_digest.reserve(SHA256_DIGEST_LENGTH * 2);
-		for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-			hex_digest.push_back(hex_chars[filter.digest[i] >> 4]);
-			hex_digest.push_back(hex_chars[filter.digest[i] & 0x0F]);
-		}
+		std::string hex_digest = to_hex(filter.digest, SHA256_DIGEST_LENGTH);
 
 		const std::string &expected = request_ctx->expected_hash;
 		if (!expected.empty() && hex_digest != expected) {
