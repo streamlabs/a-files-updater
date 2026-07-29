@@ -53,6 +53,10 @@ std::string fixup_uri(const std::string &source);
 std::string encimpl(std::string::value_type v);
 std::string urlencode(const std::string &url);
 
+/* Locale-independent, thread-safe hex encoding — avoids std stream number
+ * formatting, which inherits the global locale (see setup_locale). */
+std::string to_hex(const unsigned char *data, size_t len, bool uppercase = false);
+
 void replace_all(std::string &s, std::string_view from, std::string_view to);
 
 std::string calculate_files_checksum(const fs::path &path);
