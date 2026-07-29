@@ -271,33 +271,46 @@ async function generate_server_dir(testinfo) {
       fallbackVersion: testinfo.fallbackVersion,
       forceUpdate: false,
       details:
-        "Pretendlabs Desktop — Release Summary\n" +
-        "Covers all changes since v1.20.5.999-rc7-final-v3-actually-final\n\n" +
-        "This release upgrades the off-by-one count to zero and brings a broad set of refactors that nobody asked for.\n\n" +
-        "#features\n" +
-        "- New AI assistant that confidently writes O(n^3) sorting algorithms and calls them 'innovative'.\n" +
-        "- Added Quantum Debug Mode: when observed the bug disappears, when ignored it ships to production.\n" +
-        "- Introduced Schrodinger's Settings panel — your preferences are both saved and not saved until you reopen the app.\n" +
-        "- New Heisenberg Audio Mixer: you can know either the bitrate or the sample rate, never both.\n" +
-        "- Replaced legacy boolean with a tri-state truth value: true, false, and 'depends on the intern'.\n" +
-        "- Added '// TODO: handle this case' in 47 critical paths so you can finally sleep at night.\n" +
-        "- New Bikeshed Theme Editor lets your team argue for six weeks about whether the export button should be 4px or 5px tall.\n" +
-        "- Hot-loaded blockchain-AI-quantum-ML buzzword pipeline, currently powered by a single regex and prayer.\n\n" +
-        "#generalfixes\n" +
-        "- Fixed the off-by-one error introduced when fixing the previous off-by-one error.\n" +
-        "- Resolved a race condition in the race-condition handler; handlers now finish in roughly the order they were spawned.\n" +
-        "- Plugged 12 of the 14 known memory leaks; the other two have full benefits and their own parking spots.\n" +
-        "- Cache invalidation now correctly invalidates exactly the items that were not changed.\n" +
-        "- Tabs and spaces now coexist peacefully thanks to a new shared therapist process called clang-mediator.\n" +
-        "- Fixed undefined behavior on Tuesdays. Wednesdays remain implementation-defined.\n" +
-        "- Replaced 200 lines of 'we will refactor this later' with a single 800-line method called doTheThing().\n" +
-        "- The build is no longer reproducible, but it is reproducibly unreproducible, which we are counting as a win.\n\n" +
-        "#hotfixes\n" +
-        "- Reverted the revert that reverted the original revert; net change: a confused git history and one new co-author.\n" +
-        "- Fixed a NullPointerException that the comment directly above it explicitly said could never happen.\n" +
-        "- Patched a stack overflow in the recursion documentation; see the recursion documentation for details.\n" +
-        "- Hardcoded the build date so it is no longer a Heisenbug.\n\n" +
-        "Build date: roughly Tuesday-ish.",
+        "Streamlabs Desktop — What's New\n" +
+        "\n" +
+        "v1.21.8\n" +
+        "- Bug fixes: stock media library and translations.\n" +
+        "\n" +
+        "v1.21.7\n" +
+        "- New: Power-Ups in alerts, widgets, and recent events.\n" +
+        "- Removed Trovo (platform shut down).\n" +
+        "- Bug fixes: NDI, recording, and multistreaming.\n" +
+        "\n" +
+        "v1.21.6 - macOS oriented release\n" +
+        "- Hardware encoding, transitions, bitrate display, and themes.\n" +
+        "\n" +
+        "v1.21.4\n" +
+        "- New: YouTube monetization toggle and stream labels for Kick.\n" +
+        "- Bug fixes: dual-output layout and Advanced recording.\n" +
+        "\n" +
+        "v1.21.3\n" +
+        "- Bug fixes: Twitch game selection and general stability.\n" +
+        "\n" +
+        "v1.21.2\n" +
+        "- Bug fixes: Patreon login, Go Live, overlays, and AI Highlighter.\n" +
+        "\n" +
+        "v1.21.1\n" +
+        "- Restored TikTok and X (Twitter) chat.\n" +
+        "- Bug fixes and more supported games.\n" +
+        "\n" +
+        "v1.21.0 — Major Release\n" +
+        "A major update built on OBS 31, focused on reliability and new ways to engage your audience.\n" +
+        "- Fewer crashes and freezes across streaming, recording, and media playback.\n" +
+        "- More reliable dual-output and vertical streaming.\n" +
+        "- Better encoder compatibility, including AV1 on supported setups.\n" +
+        "- macOS reliability improvements.\n" +
+        "- New AI hub featuring Game Pulse, Reactive Overlays, and a Streaming Agent.\n" +
+        "- Game Pulse: trigger alerts and effects from in-game events.\n" +
+        "- New Reactive Data Editor for dynamic overlays.\n" +
+        "- Your session now restores after a restart, plus a \"Manage on Web\" button on widgets.\n" +
+        "- Highlighter now supports F1 25, EA Sports FC 26, Black Ops 7, NBA 2K26, and Deadlock.\n" +
+        "- Added Patreon as a new platform.\n" +
+        "- Warns you when your video codec isn't supported for restreaming.",
     };
     fse.writeJsonSync(jsonfile, jsoncontent, { spaces: 2 });
   } else if (testinfo.version_details == "empty") {
