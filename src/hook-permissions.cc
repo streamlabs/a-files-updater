@@ -200,7 +200,9 @@ InstallResult install_hook_file(const fs::path &src, const fs::path &dst)
 	staged += L".new";
 
 	if (!copy_over(src, staged)) {
-		wlog_warn(L"Failed to install %s: %lu", dst.c_str(), copy_error);
+		/* both errors: the first says why we had to stage, the second
+		 * why staging did not work either */
+		wlog_warn(L"Failed to install %s: %lu, and staging it failed: %lu", dst.c_str(), copy_error, GetLastError());
 		return InstallResult::Failed;
 	}
 
@@ -235,8 +237,12 @@ void repair_hook_directory(const fs::path &app_dir)
 		return;
 	}
 
-	enable_privilege(L"SeTakeOwnershipPrivilege");
-	enable_privilege(L"SeRestorePrivilege");
+	/* Non-fatal: we may already have the access we need. Worth knowing about
+	 * when a later ownership or DACL call fails on someone's machine. */
+	if (!enable_privilege(L"SeTakeOwnershipPrivilege"))
+		log_warn("Could not enable SeTakeOwnershipPrivilege: %lu", GetLastError());
+	if (!enable_privilege(L"SeRestorePrivilege"))
+		log_warn("Could not enable SeRestorePrivilege: %lu", GetLastError());
 
 	/* A junction left behind by whoever owned the directory before us would
 	 * send every later step - the descriptor, the copies - to its target
@@ -272,8 +278,14 @@ void repair_hook_directory(const fs::path &app_dir)
 		const fs::path src = source / name;
 		const fs::path dst = dir / name;
 
-		if (!fs::exists(src, ec))
+		if (!fs::exists(src, ec)) {
+			/* We are a remediation step, so a source we cannot
+			 * reinstall from means whatever sits at dst stays
+			 * there, and we have no idea who put it there. */
+			wlog_warn(L"Hook source %s is missing; cannot reinstall %s", src.c_str(), dst.c_str());
+			verified = false;
 			continue;
+		}
 
 		const InstallResult result = install_hook_file(src, dst);
 		if (result == InstallResult::Installed)
