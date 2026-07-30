@@ -14,6 +14,7 @@
 #include "utils.hpp"
 #include "text-panel.hpp"
 #include "blocker-panel.hpp"
+#include "hook-permissions.hpp"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -1751,6 +1752,10 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		workerThread.join();
 		update_client_flush(client.get());
 	}
+
+	/* We are the only elevated process in the update path, so the shared
+	 * graphics hook directory is ours to provision. */
+	repair_hook_directory(params.app_dir);
 
 	/* Don't attempt start if application failed to update */
 	if (cb_impl.should_start || params.restart_on_fail || !cb_impl.finished_downloading) {
