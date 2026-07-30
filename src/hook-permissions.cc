@@ -163,19 +163,43 @@ enum class InstallResult {
 	Pending,
 };
 
+/* Replaces dst without ever writing through an existing entry.
+ *
+ * A hard link planted at dst while the directory was writable shares its data
+ * with the file it was linked to, so copying onto it would put our bytes into
+ * that file - an arbitrary write, since we run elevated. Deleting removes the
+ * directory entry and not the link target, and refusing to overwrite means a
+ * re-created entry fails the copy instead of being followed. */
+bool copy_over(const fs::path &src, const fs::path &dst)
+{
+	const DWORD attributes = GetFileAttributesW(dst.c_str());
+
+	if (attributes != INVALID_FILE_ATTRIBUTES) {
+		if (attributes & FILE_ATTRIBUTE_READONLY)
+			SetFileAttributesW(dst.c_str(), attributes & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY));
+
+		if (!DeleteFileW(dst.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
+			return false;
+	}
+
+	return CopyFileW(src.c_str(), dst.c_str(), true);
+}
+
 InstallResult install_hook_file(const fs::path &src, const fs::path &dst)
 {
-	if (CopyFileW(src.c_str(), dst.c_str(), false))
+	if (copy_over(src, dst))
 		return InstallResult::Installed;
 
 	const DWORD copy_error = GetLastError();
 
 	/* The hook is loaded by whatever we are capturing, so the target can be
-	 * locked. Stage the replacement next to it and swap on reboot. */
+	 * locked. Stage the replacement next to it and swap on reboot. The swap
+	 * itself is link-safe: MoveFileEx replaces the directory entry rather
+	 * than writing through it. */
 	fs::path staged = dst;
 	staged += L".new";
 
-	if (!CopyFileW(src.c_str(), staged.c_str(), false)) {
+	if (!copy_over(src, staged)) {
 		wlog_warn(L"Failed to install %s: %lu", dst.c_str(), copy_error);
 		return InstallResult::Failed;
 	}
@@ -213,6 +237,19 @@ void repair_hook_directory(const fs::path &app_dir)
 
 	enable_privilege(L"SeTakeOwnershipPrivilege");
 	enable_privilege(L"SeRestorePrivilege");
+
+	/* A junction left behind by whoever owned the directory before us would
+	 * send every later step - the descriptor, the copies - to its target
+	 * instead. RemoveDirectoryW unlinks the junction itself and leaves
+	 * whatever it pointed at alone. */
+	const DWORD attributes = GetFileAttributesW(dir.c_str());
+	if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+		if (!RemoveDirectoryW(dir.c_str())) {
+			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
+			remove_vulkan_layer_registry();
+			return;
+		}
+	}
 
 	/* Creating the directory even when it is absent is deliberate: any user
 	 * can create a subdirectory under %ProgramData% and would own whatever
