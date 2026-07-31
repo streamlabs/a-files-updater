@@ -5,8 +5,10 @@
 #include <sddl.h>
 #include <shlobj.h>
 
+#include <cstdint>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include "logger/log.h"
 
@@ -24,7 +26,119 @@ const wchar_t *const kAdministratorsSid = L"S-1-5-32-544";
 
 const wchar_t *const kImplicitLayers = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
 
-const wchar_t *const kHookFiles[] = {L"graphics-hook32.dll", L"graphics-hook64.dll", L"obs-vulkan32.json", L"obs-vulkan64.json"};
+/* The hook and the vulkan manifest that points at it move together. */
+struct HookPair {
+	const wchar_t *dll;
+	const wchar_t *manifest;
+};
+
+const HookPair kHookPairs[] = {
+	{L"graphics-hook32.dll", L"obs-vulkan32.json"},
+	{L"graphics-hook64.dll", L"obs-vulkan64.json"},
+};
+
+const wchar_t *const kTrustedSids[] = {
+	L"S-1-5-18",                                                       /* LOCAL SYSTEM */
+	kAdministratorsSid,                                                /* BUILTIN\Administrators */
+	L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", /* TrustedInstaller */
+};
+
+constexpr DWORD kWriteAccess = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | FILE_DELETE_CHILD | DELETE | WRITE_DAC |
+			       WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
+
+bool sid_is_trusted(PSID sid)
+{
+	if (!sid || !IsValidSid(sid))
+		return false;
+
+	for (const wchar_t *candidate : kTrustedSids) {
+		PSID compare = nullptr;
+		BOOL equal = false;
+
+		if (ConvertStringSidToSidW(candidate, &compare)) {
+			equal = EqualSid(sid, compare);
+			LocalFree(compare);
+		}
+		if (equal)
+			return true;
+	}
+
+	return false;
+}
+
+/* Mirrors hook_path_is_trusted() in obs-studio's shared/obs-hook-config: owned
+ * by an administrative account, not a reparse point, and no write granted to
+ * anyone else. Kept in step by hand, since the two repositories share no
+ * header. */
+bool path_is_trusted(const fs::path &path)
+{
+	const DWORD attributes = GetFileAttributesW(path.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+		return false;
+
+	PSECURITY_DESCRIPTOR descriptor = nullptr;
+	PSID owner = nullptr;
+	PACL dacl = nullptr;
+	bool trusted = false;
+
+	if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr, &dacl, nullptr,
+				  &descriptor) != ERROR_SUCCESS) {
+		return false;
+	}
+
+	/* the owner can always rewrite the DACL, and a NULL DACL grants
+	 * everything to everyone */
+	if (sid_is_trusted(owner) && dacl) {
+		trusted = true;
+
+		for (WORD i = 0; i < dacl->AceCount; i++) {
+			ACCESS_ALLOWED_ACE *ace = nullptr;
+
+			if (!GetAce(dacl, i, reinterpret_cast<void **>(&ace))) {
+				trusted = false;
+				break;
+			}
+			if (ace->Header.AceType == ACCESS_DENIED_ACE_TYPE)
+				continue;
+			if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE) {
+				trusted = false;
+				break;
+			}
+			/* inherit-only entries grant nothing on this object */
+			if (ace->Header.AceFlags & INHERIT_ONLY_ACE)
+				continue;
+			if ((ace->Mask & kWriteAccess) == 0)
+				continue;
+			if (!sid_is_trusted(reinterpret_cast<PSID>(&ace->SidStart))) {
+				trusted = false;
+				break;
+			}
+		}
+	}
+
+	LocalFree(descriptor);
+	return trusted;
+}
+
+/* PE file version as one comparable value, 0 when it cannot be read. */
+uint64_t file_version(const fs::path &path)
+{
+	DWORD handle = 0;
+	const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &handle);
+	if (size == 0)
+		return 0;
+
+	std::vector<BYTE> buffer(size);
+	if (!GetFileVersionInfoW(path.c_str(), 0, size, buffer.data()))
+		return 0;
+
+	VS_FIXEDFILEINFO *info = nullptr;
+	UINT info_size = 0;
+	if (!VerQueryValueW(buffer.data(), L"\\", reinterpret_cast<void **>(&info), &info_size) || !info)
+		return 0;
+
+	return (static_cast<uint64_t>(info->dwFileVersionMS) << 32) | info->dwFileVersionLS;
+}
 
 bool enable_privilege(const wchar_t *name)
 {
@@ -244,6 +358,17 @@ void repair_hook_directory(const fs::path &app_dir)
 	if (!enable_privilege(L"SeRestorePrivilege"))
 		log_warn("Could not enable SeRestorePrivilege: %lu", GetLastError());
 
+	/* Read the trust state before touching anything: whether the files were
+	 * already out of reach of standard users decides whether their version
+	 * resource means anything later on. Hardening the directory propagates
+	 * to its children, so afterwards the answer would always be yes. */
+	const bool dir_was_trusted = path_is_trusted(dir);
+	bool pair_was_trusted[std::size(kHookPairs)] = {};
+
+	for (size_t i = 0; i < std::size(kHookPairs); i++) {
+		pair_was_trusted[i] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].dll) && path_is_trusted(dir / kHookPairs[i].manifest);
+	}
+
 	/* A junction left behind by whoever owned the directory before us would
 	 * send every later step - the descriptor, the copies - to its target
 	 * instead. RemoveDirectoryW unlinks the junction itself and leaves
@@ -270,26 +395,46 @@ void repair_hook_directory(const fs::path &app_dir)
 		return;
 	}
 
-	/* The files themselves are always reinstalled: a hook planted while the
-	 * directory was writable is indistinguishable from ours, and its
-	 * version resource is whatever the attacker wrote there. */
 	bool verified = true;
-	for (const wchar_t *name : kHookFiles) {
-		const fs::path src = source / name;
-		const fs::path dst = dir / name;
+	for (size_t i = 0; i < std::size(kHookPairs); i++) {
+		const fs::path src_dll = source / kHookPairs[i].dll;
+		const fs::path src_manifest = source / kHookPairs[i].manifest;
+		const fs::path dst_dll = dir / kHookPairs[i].dll;
+		const fs::path dst_manifest = dir / kHookPairs[i].manifest;
 
-		if (!fs::exists(src, ec)) {
+		if (!fs::exists(src_dll, ec) || !fs::exists(src_manifest, ec)) {
 			/* We are a remediation step, so a source we cannot
 			 * reinstall from means whatever sits at dst stays
 			 * there, and we have no idea who put it there. */
-			wlog_warn(L"Hook source %s is missing; cannot reinstall %s", src.c_str(), dst.c_str());
+			wlog_warn(L"Hook source %s is missing; cannot reinstall %s", src_dll.c_str(), dst_dll.c_str());
 			verified = false;
 			continue;
 		}
 
-		const InstallResult result = install_hook_file(src, dst);
-		if (result == InstallResult::Installed)
-			reset_file_acl(dst);
+		/* This directory is shared with every other OBS derived
+		 * application on the machine, and the hook version is the
+		 * protocol they agree on: newest wins. A version we read out of
+		 * a file only standard users could not write is one an
+		 * administrator installed, so it is worth honouring - do not
+		 * replace a newer hook that another one of them provisioned.
+		 * Where that does not hold, the version resource says whatever
+		 * whoever wrote the file wanted it to say, and nothing there
+		 * survives. */
+		if (pair_was_trusted[i] && file_version(dst_dll) >= file_version(src_dll) && file_version(dst_dll) != 0) {
+			wlog_info(L"Leaving %s in place; it is at least as new as ours", dst_dll.c_str());
+			continue;
+		}
+
+		const InstallResult dll_result = install_hook_file(src_dll, dst_dll);
+		const InstallResult manifest_result = install_hook_file(src_manifest, dst_manifest);
+
+		if (dll_result == InstallResult::Installed)
+			reset_file_acl(dst_dll);
+		else
+			verified = false;
+
+		if (manifest_result == InstallResult::Installed)
+			reset_file_acl(dst_manifest);
 		else
 			verified = false;
 	}
