@@ -50,6 +50,12 @@ const wchar_t *const kTrustedSids[] = {
 constexpr DWORD kWriteAccess = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | FILE_DELETE_CHILD | DELETE | WRITE_DAC |
 			       WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
 
+/* For a directory somewhere above what we care about, the only rights that
+ * matter are the ones that let someone replace the child out from under us.
+ * Being able to create other entries alongside it is not interesting - which
+ * is just as well, since every drive root grants exactly that. */
+constexpr DWORD kAncestorWriteAccess = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_ALL;
+
 bool sid_is_trusted(PSID sid)
 {
 	if (!sid || !IsValidSid(sid))
@@ -70,11 +76,11 @@ bool sid_is_trusted(PSID sid)
 	return false;
 }
 
-/* Mirrors hook_path_is_trusted() in obs-studio's shared/obs-hook-config: owned
- * by an administrative account, not a reparse point, and no write granted to
- * anyone else. Kept in step by hand, since the two repositories share no
- * header. */
-bool path_is_trusted(const fs::path &path)
+/* Mirrors hook_object_is_trusted() in obs-studio's shared/obs-hook-config:
+ * owned by an administrative account, not a reparse point, and nobody else
+ * holding any of write_mask. Kept in step by hand, since the two repositories
+ * share no header. */
+bool object_is_trusted(const fs::path &path, DWORD write_mask)
 {
 	const DWORD attributes = GetFileAttributesW(path.c_str());
 	if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
@@ -111,7 +117,7 @@ bool path_is_trusted(const fs::path &path)
 			/* inherit-only entries grant nothing on this object */
 			if (ace->Header.AceFlags & INHERIT_ONLY_ACE)
 				continue;
-			if ((ace->Mask & kWriteAccess) == 0)
+			if ((ace->Mask & write_mask) == 0)
 				continue;
 			if (!sid_is_trusted(reinterpret_cast<PSID>(&ace->SidStart))) {
 				trusted = false;
@@ -122,6 +128,29 @@ bool path_is_trusted(const fs::path &path)
 
 	LocalFree(descriptor);
 	return trusted;
+}
+
+bool path_is_trusted(const fs::path &path)
+{
+	return object_is_trusted(path, kWriteAccess);
+}
+
+/* The object plus every directory above it. Locking down a file means nothing
+ * if a standard user can rename one of its parents and present a different
+ * tree under the same path. */
+bool path_chain_is_trusted(const fs::path &path)
+{
+	if (!path_is_trusted(path))
+		return false;
+
+	for (fs::path current = path.parent_path();; current = current.parent_path()) {
+		if (!object_is_trusted(current, kAncestorWriteAccess))
+			return false;
+
+		/* the root is its own parent, so stop once we reach it */
+		if (!current.has_relative_path())
+			return true;
+	}
 }
 
 /* PE file version as one comparable value, 0 when it cannot be read. */
@@ -375,7 +404,7 @@ void repair_hook_directory(const fs::path &app_dir)
 	 * not necessarily %ProgramFiles% - the installer lets the user pick.
 	 * Publishing bytes from a directory a standard user can rewrite, out of
 	 * a process running as administrator, would just move the problem. */
-	if (!path_is_trusted(source)) {
+	if (!path_chain_is_trusted(source)) {
 		wlog_warn(L"Hook source directory %s is modifiable by non-administrators; unregistering the vulkan layer", source.c_str());
 		remove_vulkan_layer_registry();
 		return;
@@ -437,6 +466,15 @@ void repair_hook_directory(const fs::path &app_dir)
 			 * reinstall from means whatever sits at dst stays
 			 * there, and we have no idea who put it there. */
 			wlog_warn(L"Hook source %s is missing; cannot reinstall %s", src_dll.c_str(), dst_dll.c_str());
+			verified = false;
+			continue;
+		}
+
+		/* The directory above them being sound does not make them so:
+		 * either could carry its own entries, and the manifest decides
+		 * what the vulkan loader ends up loading. */
+		if (!path_is_trusted(src_dll) || !path_is_trusted(src_manifest)) {
+			wlog_warn(L"Hook source %s is modifiable by non-administrators; not publishing it", src_dll.c_str());
 			verified = false;
 			continue;
 		}
