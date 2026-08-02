@@ -254,9 +254,17 @@ bool create_hook_dir(const fs::path &dir)
 		return false;
 	}
 
-	bool success = CreateDirectoryW(dir.c_str(), &attributes) || GetLastError() == ERROR_ALREADY_EXISTS;
-	if (!success)
-		log_warn("Failed to create hook directory: %lu", GetLastError());
+	/* Only a directory created by this call is safe to accept. If somebody
+	 * wins the name after quarantine, hardening their directory in place
+	 * would leave any delete-capable handle they already opened alive. */
+	const bool success = CreateDirectoryW(dir.c_str(), &attributes) != 0;
+	if (!success) {
+		const DWORD error = GetLastError();
+		if (error == ERROR_ALREADY_EXISTS)
+			log_warn("The hook directory was recreated while it was being repaired; refusing it");
+		else
+			log_warn("Failed to create hook directory: %lu", error);
+	}
 
 	LocalFree(attributes.lpSecurityDescriptor);
 	return success;
@@ -465,7 +473,7 @@ void repair_hook_directory(const fs::path &app_dir)
 	 * already out of reach of standard users decides whether their version
 	 * resource means anything later on. Hardening the directory propagates
 	 * to its children, so afterwards the answer would always be yes. */
-	const bool dir_was_trusted = path_is_trusted(dir);
+	const bool dir_was_trusted = path_chain_is_trusted(dir);
 	bool pair_was_trusted[std::size(kHookPairs)] = {};
 
 	for (size_t i = 0; i < std::size(kHookPairs); i++) {
@@ -495,15 +503,12 @@ void repair_hook_directory(const fs::path &app_dir)
 		return;
 	}
 
-	/* Creating the directory even when it is absent is deliberate: any user
-	 * can create a subdirectory under %ProgramData% and would own whatever
-	 * they create there.
-	 *
-	 * The descriptor is then applied unconditionally rather than only on
-	 * the "it already existed" branch: CreateDirectoryW reporting
-	 * ERROR_ALREADY_EXISTS is exactly what someone racing us to create it
-	 * would produce, and that path must not skip the hardening. */
-	if (!create_hook_dir(dir) || !apply_hook_dir_security(dir)) {
+	/* A trusted directory can participate in newest-wins arbitration. An
+	 * untrusted or absent one must have been created by us, with the final
+	 * descriptor already attached. ERROR_ALREADY_EXISTS here means somebody
+	 * raced the quarantine; never repair that object in place, because ACL
+	 * changes do not revoke handles they opened before the change. */
+	if ((!dir_was_trusted && !create_hook_dir(dir)) || !apply_hook_dir_security(dir)) {
 		remove_vulkan_layer_registry();
 		return;
 	}
@@ -562,7 +567,7 @@ void repair_hook_directory(const fs::path &app_dir)
 
 	/* Everything above reports what it intended to do; this is what is
 	 * actually on disk now. */
-	if (verified && !path_is_trusted(dir))
+	if (verified && !path_chain_is_trusted(dir))
 		verified = false;
 
 	for (const HookPair &pair : kHookPairs) {
