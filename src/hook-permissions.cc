@@ -17,10 +17,14 @@ namespace {
 /* SYSTEM and Administrators get full control, everyone else read and execute.
  * "PAI" blocks inheritance: the CREATOR OWNER entry on %ProgramData% would
  * otherwise hand full control to whichever account creates the directory
- * first. AC (ALL APPLICATION PACKAGES) is required so that AppContainer
- * processes can load the hook. */
+ * first.
+ *
+ * AC (ALL APPLICATION PACKAGES) and S-1-15-2-2 (ALL RESTRICTED APPLICATION
+ * PACKAGES) are both required for AppContainer capture targets to load the
+ * hook: %ProgramFiles% grants both, so the copy we ship is reachable from a
+ * less privileged AppContainer and the shared copy has to be as well. */
 const wchar_t *const kHookDirSddl = L"O:BA"
-				    L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)(A;OICI;FRFX;;;AC)";
+				    L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)(A;OICI;FRFX;;;AC)(A;OICI;FRFX;;;S-1-15-2-2)";
 
 const wchar_t *const kAdministratorsSid = L"S-1-5-32-544";
 
@@ -205,16 +209,21 @@ bool apply_hook_dir_security(const fs::path &dir)
 
 	if (GetSecurityDescriptorOwner(descriptor, &owner, &defaulted) && GetSecurityDescriptorDacl(descriptor, &dacl_present, &dacl, &defaulted) &&
 	    dacl_present) {
+		/* Both have to land. Taking ownership and then failing to
+		 * rewrite the DACL leaves the old one in force; rewriting the
+		 * DACL while the directory still belongs to someone else leaves
+		 * them able to rewrite it straight back. */
 		DWORD result = SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, owner, nullptr, nullptr, nullptr);
-		if (result != ERROR_SUCCESS)
+		if (result != ERROR_SUCCESS) {
 			log_warn("Failed to take ownership of the hook directory: %lu", result);
-
-		result = SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr,
-					       dacl, nullptr);
-		if (result == ERROR_SUCCESS)
-			success = true;
-		else
-			log_warn("Failed to secure the hook directory: %lu", result);
+		} else {
+			result = SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr,
+						       nullptr, dacl, nullptr);
+			if (result == ERROR_SUCCESS)
+				success = true;
+			else
+				log_warn("Failed to secure the hook directory: %lu", result);
+		}
 	}
 
 	LocalFree(descriptor);
@@ -222,16 +231,20 @@ bool apply_hook_dir_security(const fs::path &dir)
 }
 
 /* Drops explicit entries a file picked up while the directory was writable, so
- * that it inherits the descriptor applied above instead. */
-void reset_file_acl(const fs::path &file)
+ * that it inherits the descriptor applied above instead.
+ *
+ * Only ever call this on a file we just wrote. Applied to a file we merely
+ * found, it would hand an unknown file to the administrators group and make it
+ * pass the consumer's trust check. */
+bool reset_file_acl(const fs::path &file)
 {
 	ACL empty_dacl;
 	if (!InitializeAcl(&empty_dacl, sizeof(empty_dacl), ACL_REVISION))
-		return;
+		return false;
 
 	PSID owner = nullptr;
 	if (!ConvertStringSidToSidW(kAdministratorsSid, &owner))
-		return;
+		return false;
 
 	std::wstring path = file.wstring();
 	DWORD result = SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT,
@@ -241,6 +254,7 @@ void reset_file_acl(const fs::path &file)
 		wlog_warn(L"Failed to reset permissions on %s: %lu", path.c_str(), result);
 
 	LocalFree(owner);
+	return result == ERROR_SUCCESS;
 }
 
 void delete_layer_value(HKEY root, DWORD wow_flag, const std::wstring &value)
@@ -347,7 +361,18 @@ void repair_hook_directory(const fs::path &app_dir)
 		app_dir / L"resources" / L"app.asar.unpacked" / L"node_modules" / L"obs-studio-node" / L"data" / L"obs-plugins" / L"win-capture";
 
 	if (!fs::is_directory(source, ec)) {
-		wlog_warn(L"Hook source directory %s is missing, skipping permission repair", source.c_str());
+		wlog_warn(L"Hook source directory %s is missing; unregistering the vulkan layer", source.c_str());
+		remove_vulkan_layer_registry();
+		return;
+	}
+
+	/* --app-dir comes off our own command line and the install directory is
+	 * not necessarily %ProgramFiles% - the installer lets the user pick.
+	 * Publishing bytes from a directory a standard user can rewrite, out of
+	 * a process running as administrator, would just move the problem. */
+	if (!path_is_trusted(source)) {
+		wlog_warn(L"Hook source directory %s is modifiable by non-administrators; unregistering the vulkan layer", source.c_str());
+		remove_vulkan_layer_registry();
 		return;
 	}
 
@@ -384,13 +409,13 @@ void repair_hook_directory(const fs::path &app_dir)
 
 	/* Creating the directory even when it is absent is deliberate: any user
 	 * can create a subdirectory under %ProgramData% and would own whatever
-	 * they create there. */
-	if (!fs::exists(dir, ec)) {
-		if (!create_hook_dir(dir)) {
-			remove_vulkan_layer_registry();
-			return;
-		}
-	} else if (!apply_hook_dir_security(dir)) {
+	 * they create there.
+	 *
+	 * The descriptor is then applied unconditionally rather than only on
+	 * the "it already existed" branch: CreateDirectoryW reporting
+	 * ERROR_ALREADY_EXISTS is exactly what someone racing us to create it
+	 * would produce, and that path must not skip the hardening. */
+	if (!create_hook_dir(dir) || !apply_hook_dir_security(dir)) {
 		remove_vulkan_layer_registry();
 		return;
 	}
@@ -428,28 +453,39 @@ void repair_hook_directory(const fs::path &app_dir)
 		const InstallResult dll_result = install_hook_file(src_dll, dst_dll);
 		const InstallResult manifest_result = install_hook_file(src_manifest, dst_manifest);
 
-		if (dll_result == InstallResult::Installed)
-			reset_file_acl(dst_dll);
-		else
+		/* Ownership is handed over only for a file we actually wrote.
+		 * Doing it for one we merely found would make somebody else's
+		 * file look administrator-installed to the consumer. */
+		if (dll_result != InstallResult::Installed || !reset_file_acl(dst_dll))
 			verified = false;
 
-		if (manifest_result == InstallResult::Installed)
-			reset_file_acl(dst_manifest);
-		else
+		if (manifest_result != InstallResult::Installed || !reset_file_acl(dst_manifest))
+			verified = false;
+	}
+
+	/* Everything above reports what it intended to do; this is what is
+	 * actually on disk now. */
+	if (verified && !path_is_trusted(dir))
+		verified = false;
+
+	for (const HookPair &pair : kHookPairs) {
+		if (!verified)
+			break;
+		if (!path_is_trusted(dir / pair.dll) || !path_is_trusted(dir / pair.manifest))
 			verified = false;
 	}
 
 	if (!verified) {
-		/* Either a file could not be replaced at all, or it was only
-		 * staged and the bytes on disk stay as they are until reboot —
-		 * on a machine that was already compromised, those are the
-		 * planted bytes. The directory is locked down now, so nobody
-		 * can refresh the plant, but we still must not point the vulkan
-		 * loader at it: it hands this directory to every vulkan process
-		 * on the machine. The app re-registers the layer once it sees a
-		 * directory it trusts. */
+		/* A file could not be replaced, was only staged and stays as it
+		 * is until reboot, or does not come out of this in a state we
+		 * would accept. On a machine that was already compromised those
+		 * are the planted bytes. The directory is locked down now so
+		 * nobody can refresh the plant, but we still must not point the
+		 * vulkan loader at it: the loader hands this directory to every
+		 * vulkan process on the machine. The app re-registers the layer
+		 * once it sees a directory it trusts. */
 		remove_vulkan_layer_registry();
-		log_warn("Hook files are not fully verified (locked or unreplaceable); the vulkan layer was unregistered");
+		log_warn("Hook files are not fully verified; the vulkan layer was unregistered");
 		return;
 	}
 
