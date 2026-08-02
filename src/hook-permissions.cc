@@ -300,6 +300,11 @@ enum class InstallResult {
  * re-created entry fails the copy instead of being followed. */
 bool copy_over(const fs::path &src, const fs::path &dst)
 {
+	/* TODO: Authenticode-verify src here, and where repair_hook_directory()
+	 * decides to keep an existing file rather than replace it. Permissions
+	 * establish who could have written a file, not what is in it. The open
+	 * question is which publisher to accept: the hooks ship validly signed,
+	 * but as "OBS Project, LLC" rather than as us. */
 	const DWORD attributes = GetFileAttributesW(dst.c_str());
 
 	if (attributes != INVALID_FILE_ATTRIBUTES) {
