@@ -201,6 +201,50 @@ fs::path programdata_hook_dir()
 	return fs::path(path) / L"obs-studio-hook";
 }
 
+/* Renames an untrusted directory out of the way rather than repairing it where
+ * it stands.
+ *
+ * Rewriting a DACL does not revoke handles that are already open. Whoever
+ * created the directory can hold one with delete access, let us harden and
+ * verify it, and rename it away afterwards - then put their own back at the
+ * same path. The app would reject what it finds there, but the vulkan loader
+ * does not repeat our checks. A directory that did not exist when they opened
+ * their handle is not reachable that way. */
+bool quarantine_hook_dir(const fs::path &dir)
+{
+	fs::path aside;
+	bool moved = false;
+
+	for (wchar_t suffix = L'0'; suffix <= L'9' && !moved; suffix++) {
+		aside = dir;
+		aside += L".quarantine";
+		aside += suffix;
+		moved = MoveFileExW(dir.c_str(), aside.c_str(), 0) != 0;
+	}
+
+	if (!moved) {
+		wlog_warn(L"Could not move %s aside: %lu", dir.c_str(), GetLastError());
+		return false;
+	}
+
+	/* Only the names we know. Walking the tree would mean walking whatever
+	 * links were left in it, and a delete that follows a junction deletes
+	 * what is on the other side. Anything else in there keeps the directory
+	 * alive, which is untidy but harmless - it is out of the way. */
+	for (const HookPair &pair : kHookPairs) {
+		for (const wchar_t *name : {pair.dll, pair.manifest}) {
+			fs::path leftover = aside / name;
+			MoveFileExW(leftover.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+			leftover += L".new";
+			MoveFileExW(leftover.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+		}
+	}
+	MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+
+	wlog_info(L"Moved the untrusted hook directory to %s; it goes away on the next reboot", aside.c_str());
+	return true;
+}
+
 bool create_hook_dir(const fs::path &dir)
 {
 	SECURITY_ATTRIBUTES attributes = {sizeof(attributes), nullptr, false};
@@ -439,6 +483,16 @@ void repair_hook_directory(const fs::path &app_dir)
 			remove_vulkan_layer_registry();
 			return;
 		}
+	}
+
+	/* An untrusted directory is replaced, not repaired: see
+	 * quarantine_hook_dir(). Everything in it goes with it, so there is
+	 * nothing left to arbitrate against below - pair_was_trusted is already
+	 * false throughout in this case, since it is derived from the directory
+	 * being trusted. */
+	if (!dir_was_trusted && fs::exists(dir, ec) && !quarantine_hook_dir(dir)) {
+		remove_vulkan_layer_registry();
+		return;
 	}
 
 	/* Creating the directory even when it is absent is deliberate: any user
