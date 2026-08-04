@@ -1797,7 +1797,7 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	 * already current is most of the reason this lives in the updater, so it
 	 * still has to run - just with no window left to show it in. */
 	if (!cb_impl.hook_repair_ran)
-		repair_hook_directory();
+		repair_hook_directory(params.app_dir);
 
 	/* Don't attempt start if application failed to update */
 	if (cb_impl.should_start || params.restart_on_fail || !cb_impl.finished_downloading) {

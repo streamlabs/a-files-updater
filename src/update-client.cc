@@ -58,7 +58,7 @@ void update_client::start_file_update()
 			 * the last point at which there is a UI to show it in. */
 			if (updater_events)
 				updater_events->hook_repair_start();
-			repair_hook_directory();
+			repair_hook_directory(params->app_dir);
 
 			client_events->success();
 			updated = true;
