@@ -1,3 +1,5 @@
+#define _CRT_RAND_S
+
 #include "hook-permissions.hpp"
 
 #include <windows.h>
@@ -6,6 +8,7 @@
 #include <shlobj.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -181,19 +184,34 @@ fs::path programdata_hook_dir()
 	return fs::path(path) / L"obs-studio-hook";
 }
 
-bool quarantine_hook_dir(const fs::path &dir)
+fs::path quarantine_name(const fs::path &dir)
 {
-	fs::path aside;
-	bool moved = false;
+	static const wchar_t digits[] = L"0123456789abcdef";
+	unsigned int word = 0;
 
-	for (wchar_t suffix = L'0'; suffix <= L'9' && !moved; suffix++) {
-		aside = dir;
-		aside += L".quarantine";
-		aside += suffix;
-		moved = MoveFileExW(dir.c_str(), aside.c_str(), 0) != 0;
+	/* zeroed on failure, which would leave us a fixed name */
+	if (rand_s(&word) != 0) {
+		log_warn("Could not name a quarantine directory: no randomness available");
+		return {};
 	}
 
-	if (!moved) {
+	fs::path name = dir;
+	name += L".quarantine";
+
+	for (int shift = 28; shift >= 0; shift -= 4)
+		name += digits[(word >> shift) & 0xF];
+
+	return name;
+}
+
+bool quarantine_hook_dir(const fs::path &dir)
+{
+	/* random, and tried once - see the header */
+	const fs::path aside = quarantine_name(dir);
+	if (aside.empty())
+		return false;
+
+	if (!MoveFileExW(dir.c_str(), aside.c_str(), 0)) {
 		wlog_warn(L"Could not move %s aside: %lu", dir.c_str(), GetLastError());
 		return false;
 	}
@@ -419,12 +437,12 @@ void publish_hooks(const fs::path &dir, const fs::path &source, const bool *pair
 
 } // namespace
 
-void repair_hook_directory(const fs::path &app_dir)
+bool repair_hook_directory(const fs::path &app_dir)
 {
 	const fs::path dir = programdata_hook_dir();
 	if (dir.empty()) {
 		log_warn("Could not resolve the hook directory, skipping permission repair");
-		return;
+		return false;
 	}
 
 	/* non-fatal; logged only because it explains a later ownership failure */
@@ -446,18 +464,18 @@ void repair_hook_directory(const fs::path &app_dir)
 		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
 			remove_vulkan_layer_registry();
-			return;
+			return false;
 		}
 	}
 
 	if (!dir_was_trusted && fs::exists(dir, ec) && !quarantine_hook_dir(dir)) {
 		remove_vulkan_layer_registry();
-		return;
+		return false;
 	}
 
 	if ((!dir_was_trusted && !create_hook_dir(dir)) || !apply_hook_dir_security(dir)) {
 		remove_vulkan_layer_registry();
-		return;
+		return false;
 	}
 
 	/* Permissions are settled; nothing below here may abort the repair. */
@@ -487,8 +505,9 @@ void repair_hook_directory(const fs::path &app_dir)
 	if (!complete) {
 		remove_vulkan_layer_registry();
 		log_info("Hook directory secured; the vulkan layer was unregistered until the hook is reinstalled");
-		return;
+		return true;
 	}
 
 	log_info("Hook directory permissions verified");
+	return true;
 }

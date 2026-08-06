@@ -32,6 +32,7 @@ const size_t file_buffer_size = 4096;
 #include "utils.hpp"
 #include "file-updater.h"
 #include "hook-permissions.hpp"
+#include "crash-reporter.hpp"
 
 /*##############################################
  *#
@@ -58,7 +59,8 @@ void update_client::start_file_update()
 			 * the last point at which there is a UI to show it in. */
 			if (updater_events)
 				updater_events->hook_repair_start();
-			repair_hook_directory(params->app_dir);
+			if (!repair_hook_directory(params->app_dir))
+				report_handled_error("HookRepairFailure", "Could not secure the graphics hook directory");
 
 			client_events->success();
 			updated = true;
