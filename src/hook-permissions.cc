@@ -47,6 +47,12 @@ constexpr DWORD kAncestorWriteAccess = FILE_DELETE_CHILD | DELETE | WRITE_DAC | 
 
 enum class InstallResult { Failed, Installed, StagedForReboot };
 
+bool is_reparse_point(const fs::path &path)
+{
+	const DWORD attributes = GetFileAttributesW(path.c_str());
+	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+
 bool sid_is_trusted(PSID sid)
 {
 	if (!sid || !IsValidSid(sid))
@@ -216,16 +222,23 @@ bool quarantine_hook_dir(const fs::path &dir)
 		return false;
 	}
 
-	/* only the names we own - walking the tree would follow whatever
-	 * junctions were left in it */
-	for (const HookPair &pair : kHookPairs) {
-		for (const wchar_t *name : {pair.dll, pair.manifest}) {
-			fs::path leftover = aside / name;
-			MoveFileExW(leftover.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
-			leftover += L".new";
-			MoveFileExW(leftover.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+	/* A junction survives the rename, and a child path below one resolves
+	 * through it - we would be scheduling deletions in whatever it points
+	 * at, carried out at reboot as SYSTEM. Tested after the move and not
+	 * before it, where it would only describe what the path used to be. */
+	if (!is_reparse_point(aside)) {
+		/* only the names we own - walking the tree would follow
+		 * whatever junctions were left in it */
+		for (const HookPair &pair : kHookPairs) {
+			for (const wchar_t *name : {pair.dll, pair.manifest}) {
+				fs::path leftover = aside / name;
+				MoveFileExW(leftover.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+				leftover += L".new";
+				MoveFileExW(leftover.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+			}
 		}
 	}
+
 	MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
 
 	wlog_info(L"Moved the untrusted hook directory to %s; it goes away on the next reboot", aside.c_str());
@@ -459,8 +472,7 @@ bool repair_hook_directory(const fs::path &app_dir)
 
 	/* unlink a junction rather than working through it to its target */
 	std::error_code ec;
-	const DWORD attributes = GetFileAttributesW(dir.c_str());
-	if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+	if (is_reparse_point(dir)) {
 		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
 			remove_vulkan_layer_registry();
