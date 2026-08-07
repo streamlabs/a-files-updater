@@ -47,12 +47,21 @@ struct downloader_callbacks {
  *                        ↓              ↑
  * updater_start -> update_file -> update_finished ─┐
  * updater_complete<-───────No─more─files───────────┘
+ *          ↓
+ * hook_repair_start
  */
 struct updater_callbacks {
 	virtual void updater_start() = 0;
 	virtual void update_file(std::string &filename) = 0;
 	virtual void update_finished(std::string &filename) = 0;
 	virtual void updater_complete() = 0;
+
+	/* Files are on disk and the hook directory is about to be reprovisioned
+	 * from them. No cancel: past this point the update has already been
+	 * applied, so the only thing left to decide is whether the hook that
+	 * goes with it is sound. The step is shown so a slow one does not read
+	 * as a hang. */
+	virtual void hook_repair_start() = 0;
 };
 
 /* Sequence of events:
