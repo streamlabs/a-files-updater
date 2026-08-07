@@ -14,6 +14,7 @@
 #include "utils.hpp"
 #include "text-panel.hpp"
 #include "blocker-panel.hpp"
+#include "hook-permissions.hpp"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -204,6 +205,11 @@ struct callbacks_impl : public install_callbacks,
 	void update_file(std::string &filename) final {}
 	void update_finished(std::string &filename) final {}
 	void updater_complete() final {}
+	void hook_repair_start() final;
+
+	/* Set by hook_repair_start, so wWinMain can tell whether the update path
+	 * already covered the repair or has to fall back to running it silently. */
+	bool hook_repair_ran{false};
 
 	bool prompt_user(const char *pVersion, const char *pDetails);
 	bool prompt_file_removal();
@@ -1029,6 +1035,40 @@ void callbacks_impl::updater_start()
 	SetWindowTextW(progress_label, copying_label.c_str());
 }
 
+void callbacks_impl::hook_repair_start()
+{
+	hook_repair_ran = true;
+
+	std::wstring securing_label = ConvertToUtf16WS(boost::locale::translate("Securing the graphics hook..."));
+
+	HDC hdc = GetDC(frame);
+	HFONT hfontOld = (HFONT)SelectObject(hdc, main_font);
+
+	progress_label_rect = {0};
+	DrawText(hdc, securing_label.c_str(), -1, &progress_label_rect, DT_CALCRECT | DT_NOCLIP);
+
+	progress_label_rect.right -= progress_label_rect.left;
+
+	SelectObject(hdc, hfontOld);
+	ReleaseDC(frame, hdc);
+
+	/* Nothing here is cancellable - the update is already on disk - so the
+	 * download phase's Skip button does not carry over. */
+	ShowWindow(cancel_button, SW_HIDE);
+	ShowWindow(continue_button, SW_HIDE);
+	ShowWindow(kill_button, SW_HIDE);
+
+	/* No per-file progress worth reporting, and the step is short on a
+	 * machine already in good order, so the bar only has to show motion. */
+	SetWindowLongPtrW(progress_worker, GWL_STYLE, GetWindowLongPtrW(progress_worker, GWL_STYLE) | PBS_MARQUEE);
+	SendMessage(progress_worker, PBM_SETMARQUEE, TRUE, 30);
+	ShowWindow(progress_worker, SW_SHOW);
+
+	repostionUI();
+
+	SetWindowTextW(progress_label, securing_label.c_str());
+}
+
 void callbacks_impl::calculate_text_dimensions(const std::wstring &title, RECT &title_rect)
 {
 	RECT rcClient{};
@@ -1751,6 +1791,13 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		workerThread.join();
 		update_client_flush(client.get());
 	}
+
+	/* Every path that did not reach the step inside the update: a declined
+	 * update, a failed one, or nothing to update. Repairing machines that are
+	 * already current is most of the reason this lives in the updater, so it
+	 * still has to run - just with no window left to show it in. */
+	if (!cb_impl.hook_repair_ran && !repair_hook_directory(params.app_dir))
+		report_handled_error("HookRepairFailure", "Could not secure the graphics hook directory");
 
 	/* Don't attempt start if application failed to update */
 	if (cb_impl.should_start || params.restart_on_fail || !cb_impl.finished_downloading) {
