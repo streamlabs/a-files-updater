@@ -364,10 +364,24 @@ bool delete_then_copy(const fs::path &src, const fs::path &dst)
 	return CopyFileW(src.c_str(), dst.c_str(), true);
 }
 
+/* A .new an earlier run queued is still queued, and at reboot it would put that
+ * older copy back over whatever is there now. Deleting the file is enough to
+ * cancel it: a pending rename whose source has gone is skipped. */
+void discard_staged(const fs::path &dst)
+{
+	fs::path staged = dst;
+	staged += L".new";
+
+	if (DeleteFileW(staged.c_str()))
+		wlog_info(L"Discarded %s, which was queued to replace a newer file at the next reboot", staged.c_str());
+}
+
 InstallResult install_hook_file(const fs::path &src, const fs::path &dst)
 {
-	if (delete_then_copy(src, dst))
+	if (delete_then_copy(src, dst)) {
+		discard_staged(dst);
 		return InstallResult::Installed;
+	}
 
 	const DWORD copy_error = GetLastError();
 
@@ -437,6 +451,10 @@ void publish_hooks(const fs::path &dir, const fs::path &source, const bool *pair
 		/* newest wins, across every OBS derived application on the box */
 		if (pair_was_trusted[i] && file_version(dst_dll) >= file_version(src_dll) && file_version(dst_dll) != 0) {
 			wlog_info(L"Leaving %s in place; it is at least as new as ours", dst_dll.c_str());
+			/* ours is the older of the two, so a staged copy of it
+			 * would undo this at the next reboot */
+			discard_staged(dst_dll);
+			discard_staged(dst_manifest);
 			continue;
 		}
 
@@ -464,11 +482,19 @@ bool repair_hook_directory(const fs::path &app_dir)
 	if (!enable_privilege(L"SeRestorePrivilege"))
 		log_warn("Could not enable SeRestorePrivilege: %lu", GetLastError());
 
+	/* Every trust question about what is already here is answered now, before
+	 * the descriptor goes on. Applying it propagates to the children, and a
+	 * file that was writable only through an inherited ACE reads as
+	 * administrator-installed afterwards. */
 	const bool dir_was_trusted = path_chain_is_trusted(dir);
+	bool file_was_trusted[std::size(kHookPairs)][2] = {};
 	bool pair_was_trusted[std::size(kHookPairs)] = {};
 
-	for (size_t i = 0; i < std::size(kHookPairs); i++)
-		pair_was_trusted[i] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].dll) && path_is_trusted(dir / kHookPairs[i].manifest);
+	for (size_t i = 0; i < std::size(kHookPairs); i++) {
+		file_was_trusted[i][0] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].dll);
+		file_was_trusted[i][1] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].manifest);
+		pair_was_trusted[i] = file_was_trusted[i][0] && file_was_trusted[i][1];
+	}
 
 	/* unlink a junction rather than working through it to its target */
 	std::error_code ec;
@@ -492,11 +518,15 @@ bool repair_hook_directory(const fs::path &app_dir)
 
 	/* Permissions are settled; nothing below here may abort the repair. */
 
-	for (const HookPair &pair : kHookPairs) {
-		for (const wchar_t *name : {pair.dll, pair.manifest}) {
-			const fs::path file = dir / name;
+	for (size_t i = 0; i < std::size(kHookPairs); i++) {
+		const wchar_t *const names[] = {kHookPairs[i].dll, kHookPairs[i].manifest};
 
-			if (!fs::exists(file, ec) || path_is_trusted(file))
+		for (size_t j = 0; j < std::size(names); j++) {
+			const fs::path file = dir / names[j];
+
+			/* the sample, not a fresh check: this runs after the
+			 * hardening it would otherwise be reading back */
+			if (file_was_trusted[i][j] || !fs::exists(file, ec))
 				continue;
 
 			if (DeleteFileW(file.c_str()))
@@ -510,14 +540,23 @@ bool repair_hook_directory(const fs::path &app_dir)
 	if (!source.empty())
 		publish_hooks(dir, source, pair_was_trusted);
 
-	bool complete = path_chain_is_trusted(dir);
+	const bool dir_is_trusted = path_chain_is_trusted(dir);
+	bool complete = dir_is_trusted;
+
 	for (const HookPair &pair : kHookPairs)
 		complete = complete && path_is_trusted(dir / pair.dll) && path_is_trusted(dir / pair.manifest);
 
 	if (!complete) {
 		remove_vulkan_layer_registry();
-		log_info("Hook directory secured; the vulkan layer was unregistered until the hook is reinstalled");
-		return true;
+
+		/* only the payload being short is a success; the directory not
+		 * being ours is the failure this reports */
+		if (dir_is_trusted)
+			log_info("Hook directory secured; the vulkan layer was unregistered until the hook is reinstalled");
+		else
+			log_warn("Hook directory is still modifiable by non-administrators; the vulkan layer was unregistered");
+
+		return dir_is_trusted;
 	}
 
 	log_info("Hook directory permissions verified");

@@ -42,9 +42,12 @@ namespace fs = std::filesystem;
  *     one we merely found relabels it as administrator-installed, which is
  *     exactly what the app reads to decide what to inject into other
  *     processes. A file we cannot vouch for is deleted instead.
- *   - Trust is sampled before hardening. Afterwards the descriptor propagates
- *     to the children, so everything looks administrator-installed - including
- *     the version resource the newest-wins arbitration reads.
+ *   - Trust is sampled before hardening, and every later decision reads the
+ *     sample rather than the disk. Afterwards the descriptor propagates to the
+ *     children, so a file that was writable only through an inherited ACE
+ *     reads as administrator-installed - which would both spare it from the
+ *     deletion it had earned and lend its version resource to the newest-wins
+ *     arbitration.
  *   - The ancestor write mask is deliberately weaker than the object one. Every
  *     drive root grants create-file to Authenticated Users, so the strict mask
  *     would reject every path on the machine.
