@@ -5,7 +5,7 @@
 ```
 mkdir build
 cd build 
-cmake -G "Visual Studio 15 2017 Win64" ../
+cmake -G "Visual Studio 17 2022" ../
 cmake --build . --target ALL_BUILD --config Debug
 cd ..\test
 yarn install 
