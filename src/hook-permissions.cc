@@ -46,6 +46,18 @@ constexpr DWORD kWriteAccess = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_E
 
 constexpr DWORD kAncestorWriteAccess = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_ALL;
 
+/* A volume root is the one ancestor DELETE says nothing about: it cannot be
+ * renamed or unlinked, and holding it there confers nothing over what is
+ * inside. Replacing a directory below the root needs FILE_DELETE_CHILD on the
+ * root, or DELETE on that directory itself, and both are still checked.
+ *
+ * Counting it rejected real machines. The default root ACE
+ * (A;OICIIO;GRGWGX+DELETE;;;AU) is inherit-only and carries DELETE, so anything
+ * that materialises it onto the root - icacls /reset, a permissions repair
+ * tool, an imaging step - leaves DELETE granted to Authenticated Users and
+ * harmless, and every path on the machine failing. */
+constexpr DWORD kRootWriteAccess = FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_ALL;
+
 enum class InstallResult { Failed, Installed, StagedForReboot };
 
 bool is_reparse_point(const fs::path &path)
@@ -205,14 +217,16 @@ TrustReport chain_trust(const fs::path &path)
 	report.ancestors = true;
 
 	for (fs::path current = path.parent_path();; current = current.parent_path()) {
-		if (!object_is_trusted(current, kAncestorWriteAccess, &report.ancestor_why)) {
+		/* the root is its own parent, so this doubles as the stop */
+		const bool at_root = !current.has_relative_path();
+
+		if (!object_is_trusted(current, at_root ? kRootWriteAccess : kAncestorWriteAccess, &report.ancestor_why)) {
 			report.ancestors = false;
 			report.ancestor = current;
 			break;
 		}
 
-		/* the root is its own parent, so stop once we reach it */
-		if (!current.has_relative_path())
+		if (at_root)
 			break;
 	}
 
