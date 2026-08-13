@@ -13,6 +13,7 @@
 #include <system_error>
 #include <vector>
 
+#include "crash-reporter.hpp"
 #include "logger/log.h"
 
 namespace {
@@ -53,6 +54,29 @@ bool is_reparse_point(const fs::path &path)
 	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
+/* manual: stream number formatting is not locale-safe on the worker thread */
+std::wstring hex32(uint32_t value)
+{
+	static const wchar_t digits[] = L"0123456789ABCDEF";
+	std::wstring text = L"0x";
+
+	for (int shift = 28; shift >= 0; shift -= 4)
+		text += digits[(value >> shift) & 0xF];
+
+	return text;
+}
+
+std::wstring sid_string(PSID sid)
+{
+	wchar_t *text = nullptr;
+	if (!sid || !IsValidSid(sid) || !ConvertSidToStringSidW(sid, &text))
+		return L"an unreadable SID";
+
+	std::wstring result = text;
+	LocalFree(text);
+	return result;
+}
+
 bool sid_is_trusted(PSID sid)
 {
 	if (!sid || !IsValidSid(sid))
@@ -73,38 +97,52 @@ bool sid_is_trusted(PSID sid)
 	return false;
 }
 
-bool object_is_trusted(const fs::path &path, DWORD write_mask)
+/* On false, why is filled with a phrase that reads after the path: "<path> is
+ * owned by S-1-5-21-...". Deducing that from a bare bool cost a Sentry round
+ * trip once already. */
+bool object_is_trusted(const fs::path &path, DWORD write_mask, std::wstring *why)
 {
-	const DWORD attributes = GetFileAttributesW(path.c_str());
-	if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+	const auto refuse = [why](std::wstring reason) {
+		if (why)
+			*why = std::move(reason);
 		return false;
+	};
+
+	const DWORD attributes = GetFileAttributesW(path.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+		return refuse(L"cannot be read: " + hex32(GetLastError()));
+	if (attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+		return refuse(L"is a reparse point");
 
 	PSECURITY_DESCRIPTOR descriptor = nullptr;
 	PSID owner = nullptr;
 	PACL dacl = nullptr;
-	bool trusted = false;
 
-	if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr, &dacl, nullptr,
-				  &descriptor) != ERROR_SUCCESS) {
-		return false;
-	}
+	const DWORD read = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr, &dacl,
+						 nullptr, &descriptor);
+	if (read != ERROR_SUCCESS)
+		return refuse(L"has an unreadable security descriptor: " + hex32(read));
+
+	std::wstring reason;
 
 	/* the owner can always rewrite the DACL, and a NULL DACL grants everyone
 	 * everything */
-	if (sid_is_trusted(owner) && dacl) {
-		trusted = true;
-
+	if (!sid_is_trusted(owner)) {
+		reason = L"is owned by " + sid_string(owner);
+	} else if (!dacl) {
+		reason = L"has no DACL, which grants everyone everything";
+	} else {
 		for (WORD i = 0; i < dacl->AceCount; i++) {
 			ACCESS_ALLOWED_ACE *ace = nullptr;
 
 			if (!GetAce(dacl, i, reinterpret_cast<void **>(&ace))) {
-				trusted = false;
+				reason = L"has an unreadable ACE at index " + hex32(i);
 				break;
 			}
 			if (ace->Header.AceType == ACCESS_DENIED_ACE_TYPE)
 				continue;
 			if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE) {
-				trusted = false;
+				reason = L"has an ACE at index " + hex32(i) + L" of unhandled type " + hex32(ace->Header.AceType);
 				break;
 			}
 			/* inherit-only grants nothing on this object */
@@ -112,35 +150,73 @@ bool object_is_trusted(const fs::path &path, DWORD write_mask)
 				continue;
 			if ((ace->Mask & write_mask) == 0)
 				continue;
-			if (!sid_is_trusted(reinterpret_cast<PSID>(&ace->SidStart))) {
-				trusted = false;
+
+			PSID grantee = reinterpret_cast<PSID>(&ace->SidStart);
+			if (!sid_is_trusted(grantee)) {
+				reason = L"grants " + sid_string(grantee) + L" write access " + hex32(ace->Mask & write_mask) + L", out of " + hex32(ace->Mask);
 				break;
 			}
 		}
 	}
 
 	LocalFree(descriptor);
-	return trusted;
+
+	if (reason.empty())
+		return true;
+
+	return refuse(std::move(reason));
 }
 
-bool path_is_trusted(const fs::path &path)
+/* Whether a file is ours, saying why when it is not. Every refusal here is
+ * logged rather than summarised, because the cause is not always a write grant
+ * - an unreadable descriptor or a reparse point lands here too - and a caller
+ * that phrases it as one is guessing. */
+bool file_is_trusted(const wchar_t *lead, const fs::path &path)
 {
-	return object_is_trusted(path, kWriteAccess);
+	std::wstring why;
+
+	if (object_is_trusted(path, kWriteAccess, &why))
+		return true;
+
+	wlog_warn(L"%s %s %s", lead, path.c_str(), why.c_str());
+	return false;
 }
 
-bool path_chain_is_trusted(const fs::path &path)
+/* The object and the path to it are answered separately, because only the
+ * object is acted on: it is the one that says who wrote what is there, and the
+ * one an elevated writer can repair. An untrusted ancestor is reported and
+ * nothing else - see the header.
+ *
+ * Deliberately no bool that folds the two back together. One of those is what
+ * had the repair quarantining a sound directory over a drive root. */
+struct TrustReport {
+	bool object = false;
+	bool ancestors = false;
+	std::wstring object_why;
+	fs::path ancestor; /* the component ancestor_why describes */
+	std::wstring ancestor_why;
+};
+
+TrustReport chain_trust(const fs::path &path)
 {
-	if (!path_is_trusted(path))
-		return false;
+	TrustReport report;
+
+	report.object = object_is_trusted(path, kWriteAccess, &report.object_why);
+	report.ancestors = true;
 
 	for (fs::path current = path.parent_path();; current = current.parent_path()) {
-		if (!object_is_trusted(current, kAncestorWriteAccess))
-			return false;
+		if (!object_is_trusted(current, kAncestorWriteAccess, &report.ancestor_why)) {
+			report.ancestors = false;
+			report.ancestor = current;
+			break;
+		}
 
 		/* the root is its own parent, so stop once we reach it */
 		if (!current.has_relative_path())
-			return true;
+			break;
 	}
+
+	return report;
 }
 
 uint64_t file_version(const fs::path &path)
@@ -420,10 +496,18 @@ fs::path trusted_hook_payload(const fs::path &app_dir)
 		return {};
 	}
 
-	if (!path_chain_is_trusted(source)) {
-		wlog_warn(L"Hook payload %s is modifiable by non-administrators; not publishing it", source.c_str());
+	/* The directory holding it, not the path to it: a standard user who can
+	 * rename a parent of %ProgramFiles% can replace the application itself,
+	 * so refusing over one would cost capture and deny them nothing. */
+	const TrustReport trust = chain_trust(source);
+
+	if (!trust.object) {
+		wlog_warn(L"Hook payload %s %s; not publishing it", source.c_str(), trust.object_why.c_str());
 		return {};
 	}
+	if (!trust.ancestors)
+		wlog_warn(L"Hook payload %s is reached through %s, which %s; publishing it anyway", source.c_str(), trust.ancestor.c_str(),
+			  trust.ancestor_why.c_str());
 
 	return source;
 }
@@ -443,10 +527,8 @@ void publish_hooks(const fs::path &dir, const fs::path &source, const bool *pair
 			continue;
 		}
 
-		if (!path_is_trusted(src_dll) || !path_is_trusted(src_manifest)) {
-			wlog_warn(L"Hook payload %s is modifiable by non-administrators; not publishing it", src_dll.c_str());
+		if (!file_is_trusted(L"Not publishing hook payload", src_dll) || !file_is_trusted(L"Not publishing hook payload", src_manifest))
 			continue;
-		}
 
 		/* newest wins, across every OBS derived application on the box */
 		if (pair_was_trusted[i] && file_version(dst_dll) >= file_version(src_dll) && file_version(dst_dll) != 0) {
@@ -468,12 +550,12 @@ void publish_hooks(const fs::path &dir, const fs::path &source, const bool *pair
 
 } // namespace
 
-bool repair_hook_directory(const fs::path &app_dir)
+HookRepair repair_hook_directory(const fs::path &app_dir)
 {
 	const fs::path dir = programdata_hook_dir();
 	if (dir.empty()) {
 		log_warn("Could not resolve the hook directory, skipping permission repair");
-		return false;
+		return HookRepair::Failed;
 	}
 
 	/* non-fatal; logged only because it explains a later ownership failure */
@@ -486,34 +568,59 @@ bool repair_hook_directory(const fs::path &app_dir)
 	 * the descriptor goes on. Applying it propagates to the children, and a
 	 * file that was writable only through an inherited ACE reads as
 	 * administrator-installed afterwards. */
-	const bool dir_was_trusted = path_chain_is_trusted(dir);
+	const TrustReport before = chain_trust(dir);
+	const bool dir_was_trusted = before.object;
 	bool file_was_trusted[std::size(kHookPairs)][2] = {};
+	/* kept alongside the sample: after the hardening below, a fresh check
+	 * would report the descriptor we just applied rather than the one that
+	 * earned the deletion */
+	std::wstring file_why[std::size(kHookPairs)][2];
 	bool pair_was_trusted[std::size(kHookPairs)] = {};
 
+	/* Nothing an elevated writer can repair, and no reason to distrust the
+	 * hooks: whoever wrote them is a separate question from whether the way
+	 * to them can be swapped. Logged here so it survives a later failure. */
+	if (!before.ancestors)
+		wlog_warn(L"The hook directory is reached through %s, which %s", before.ancestor.c_str(), before.ancestor_why.c_str());
+
 	for (size_t i = 0; i < std::size(kHookPairs); i++) {
-		file_was_trusted[i][0] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].dll);
-		file_was_trusted[i][1] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].manifest);
+		const wchar_t *const names[] = {kHookPairs[i].dll, kHookPairs[i].manifest};
+
+		for (size_t j = 0; j < std::size(names); j++) {
+			const bool trusted = object_is_trusted(dir / names[j], kWriteAccess, &file_why[i][j]);
+
+			file_was_trusted[i][j] = dir_was_trusted && trusted;
+			if (trusted && !dir_was_trusted)
+				file_why[i][j] = L"sat in a directory that was not ours";
+		}
+
 		pair_was_trusted[i] = file_was_trusted[i][0] && file_was_trusted[i][1];
 	}
 
 	/* unlink a junction rather than working through it to its target */
 	std::error_code ec;
 	if (is_reparse_point(dir)) {
+		wlog_warn(L"Hook directory %s is a reparse point; unlinking it rather than working through it", dir.c_str());
+
 		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
 			remove_vulkan_layer_registry();
-			return false;
+			return HookRepair::Failed;
 		}
 	}
 
-	if (!dir_was_trusted && fs::exists(dir, ec) && !quarantine_hook_dir(dir)) {
-		remove_vulkan_layer_registry();
-		return false;
+	if (!dir_was_trusted && fs::exists(dir, ec)) {
+		wlog_warn(L"Hook directory %s %s; replacing it", dir.c_str(), before.object_why.c_str());
+
+		if (!quarantine_hook_dir(dir)) {
+			remove_vulkan_layer_registry();
+			return HookRepair::Failed;
+		}
 	}
 
 	if ((!dir_was_trusted && !create_hook_dir(dir)) || !apply_hook_dir_security(dir)) {
 		remove_vulkan_layer_registry();
-		return false;
+		return HookRepair::Failed;
 	}
 
 	/* Permissions are settled; nothing below here may abort the repair. */
@@ -530,9 +637,9 @@ bool repair_hook_directory(const fs::path &app_dir)
 				continue;
 
 			if (DeleteFileW(file.c_str()))
-				wlog_warn(L"Deleted %s: it was modifiable by non-administrators", file.c_str());
+				wlog_warn(L"Deleted %s: it %s", file.c_str(), file_why[i][j].c_str());
 			else
-				wlog_warn(L"Could not delete untrusted %s: %lu", file.c_str(), GetLastError());
+				wlog_warn(L"Could not delete %s, which %s: %lu", file.c_str(), file_why[i][j].c_str(), GetLastError());
 		}
 	}
 
@@ -540,25 +647,57 @@ bool repair_hook_directory(const fs::path &app_dir)
 	if (!source.empty())
 		publish_hooks(dir, source, pair_was_trusted);
 
-	const bool dir_is_trusted = path_chain_is_trusted(dir);
-	bool complete = dir_is_trusted;
+	const TrustReport after = chain_trust(dir);
+	bool hooks_trusted = true;
 
-	for (const HookPair &pair : kHookPairs)
-		complete = complete && path_is_trusted(dir / pair.dll) && path_is_trusted(dir / pair.manifest);
-
-	if (!complete) {
-		remove_vulkan_layer_registry();
-
-		/* only the payload being short is a success; the directory not
-		 * being ours is the failure this reports */
-		if (dir_is_trusted)
-			log_info("Hook directory secured; the vulkan layer was unregistered until the hook is reinstalled");
-		else
-			log_warn("Hook directory is still modifiable by non-administrators; the vulkan layer was unregistered");
-
-		return dir_is_trusted;
+	/* every one of them, not just the first: a log that names one missing
+	 * file when two are missing sends the next reader looking for the wrong
+	 * thing */
+	for (const HookPair &pair : kHookPairs) {
+		for (const wchar_t *name : {pair.dll, pair.manifest}) {
+			if (!file_is_trusted(L"Shared hook", dir / name))
+				hooks_trusted = false;
+		}
 	}
 
-	log_info("Hook directory permissions verified");
-	return true;
+	/* The layer is kept by a directory that is ours holding a full set of
+	 * trusted hooks. The path above it is reported and nothing else - see
+	 * the header. */
+	if (!after.object || !hooks_trusted)
+		remove_vulkan_layer_registry();
+
+	if (!after.object) {
+		wlog_warn(L"The repair did not take - hook directory %s %s; the vulkan layer was unregistered", dir.c_str(), after.object_why.c_str());
+		return HookRepair::Failed;
+	}
+
+	if (!hooks_trusted)
+		log_info("Hook directory secured; the vulkan layer was unregistered until the hook is reinstalled");
+	else
+		log_info("Hook directory permissions verified");
+
+	if (!after.ancestors) {
+		wlog_warn(L"Hook directory %s is administrator-only, but it is reached through %s, which %s; left in use", dir.c_str(), after.ancestor.c_str(),
+			  after.ancestor_why.c_str());
+		return HookRepair::AncestorUntrusted;
+	}
+
+	return HookRepair::Secured;
+}
+
+void report_hook_repair(HookRepair result)
+{
+	switch (result) {
+	case HookRepair::Secured:
+		break;
+	case HookRepair::AncestorUntrusted:
+		/* not necessarily a write grant - a reparse point or an
+		 * unreadable descriptor lands here too, and the log has the
+		 * one that did */
+		report_handled_error("HookDirAncestorUntrusted", "A directory above the graphics hook directory could not be trusted");
+		break;
+	case HookRepair::Failed:
+		report_handled_error("HookRepairFailure", "Could not secure the graphics hook directory");
+		break;
+	}
 }
