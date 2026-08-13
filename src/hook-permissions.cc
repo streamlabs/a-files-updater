@@ -172,6 +172,20 @@ bool path_is_trusted(const fs::path &path)
 	return object_is_trusted(path, kWriteAccess, nullptr);
 }
 
+/* path_is_trusted, but it says why it refused. The refusal is not always a
+ * write grant - an unreadable descriptor or a reparse point lands here too - so
+ * a caller that phrases it as one is guessing. */
+bool file_is_trusted(const wchar_t *lead, const fs::path &path)
+{
+	std::wstring why;
+
+	if (object_is_trusted(path, kWriteAccess, &why))
+		return true;
+
+	wlog_warn(L"%s %s %s", lead, path.c_str(), why.c_str());
+	return false;
+}
+
 /* The object and the path to it are answered separately, because only the
  * object is acted on: it is the one that says who wrote what is there, and the
  * one an elevated writer can repair. An untrusted ancestor is reported and
@@ -517,10 +531,8 @@ void publish_hooks(const fs::path &dir, const fs::path &source, const bool *pair
 			continue;
 		}
 
-		if (!path_is_trusted(src_dll) || !path_is_trusted(src_manifest)) {
-			wlog_warn(L"Hook payload %s is modifiable by non-administrators; not publishing it", src_dll.c_str());
+		if (!file_is_trusted(L"Not publishing hook payload", src_dll) || !file_is_trusted(L"Not publishing hook payload", src_manifest))
 			continue;
-		}
 
 		/* newest wins, across every OBS derived application on the box */
 		if (pair_was_trusted[i] && file_version(dst_dll) >= file_version(src_dll) && file_version(dst_dll) != 0) {
@@ -662,7 +674,10 @@ void report_hook_repair(HookRepair result)
 	case HookRepair::Secured:
 		break;
 	case HookRepair::AncestorUntrusted:
-		report_handled_error("HookDirAncestorUntrusted", "A directory above the graphics hook directory is writable by non-administrators");
+		/* not necessarily a write grant - a reparse point or an
+		 * unreadable descriptor lands here too, and the log has the
+		 * one that did */
+		report_handled_error("HookDirAncestorUntrusted", "A directory above the graphics hook directory could not be trusted");
 		break;
 	case HookRepair::Failed:
 		report_handled_error("HookRepairFailure", "Could not secure the graphics hook directory");

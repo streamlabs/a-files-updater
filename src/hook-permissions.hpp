@@ -20,9 +20,13 @@ namespace fs = std::filesystem;
  * at it.
  *
  * Returns how the directory came out. Failed means the directory itself is
- * still whatever it was, quite possibly a standard user's, and is the only one
- * that unregisters the layer. Secured with the layer unregistered is not a
- * failure: the directory is ours, only the hook payload was short.
+ * still whatever it was, quite possibly a standard user's. Secured means it is
+ * ours, whether or not the hooks in it turned out to be a full trusted set.
+ *
+ * The return value does not say what became of the vulkan layer, and is not
+ * meant to. The layer is unregistered whenever the directory is not ours or the
+ * hooks in it are not a full trusted set, so Secured and AncestorUntrusted can
+ * each come back with it registered or not. The log says which.
  *
  * AncestorUntrusted changes nothing and is reported only so we can see how
  * often it happens. The directory is ours, but something above it - %ProgramData%
