@@ -19,10 +19,19 @@ namespace fs = std::filesystem;
  * hooks ends with the vulkan implicit layer unregistered rather than pointing
  * at it.
  *
- * Returns whether the directory came out under administrator-only control.
- * False means it is still whatever it was, quite possibly a standard user's,
- * and is worth reporting. True with the vulkan layer unregistered is not a
+ * Returns how the directory came out. Failed means the directory itself is
+ * still whatever it was, quite possibly a standard user's, and is the only one
+ * that unregisters the layer. Secured with the layer unregistered is not a
  * failure: the directory is ours, only the hook payload was short.
+ *
+ * AncestorUntrusted changes nothing and is reported only so we can see how
+ * often it happens. The directory is ours, but something above it - %ProgramData%
+ * or the drive root - is not. Nothing here acts on that. No elevated writer can
+ * repair a drive root, it says nothing about who wrote the hooks, and a standard
+ * user who can rename a parent of %ProgramData% can equally rename a parent of
+ * %ProgramFiles% and replace the application the user launches. Withdrawing the
+ * layer over it would take vulkan capture away from every OBS derived
+ * application on the machine, permanently, and deny that user nothing.
  *
  * Six things in the implementation look like over-caution and are not:
  *
@@ -61,4 +70,15 @@ namespace fs = std::filesystem;
  *
  * The same rules live in obs-studio's shared/obs-hook-config/hook-dir-security.h
  * and are kept in step by hand, since the two repositories share no header. */
-bool repair_hook_directory(const fs::path &app_dir);
+enum class HookRepair {
+	Secured,
+	AncestorUntrusted,
+	Failed,
+};
+
+HookRepair repair_hook_directory(const fs::path &app_dir);
+
+/* Raises the handled error the outcome deserves, if any. Separate categories:
+ * an untrusted ancestor is an environment we cannot repair, and grouping it
+ * with a failed repair would bury the one we can. */
+void report_hook_repair(HookRepair result);
