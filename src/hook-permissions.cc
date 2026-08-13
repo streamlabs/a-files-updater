@@ -167,14 +167,10 @@ bool object_is_trusted(const fs::path &path, DWORD write_mask, std::wstring *why
 	return refuse(std::move(reason));
 }
 
-bool path_is_trusted(const fs::path &path)
-{
-	return object_is_trusted(path, kWriteAccess, nullptr);
-}
-
-/* path_is_trusted, but it says why it refused. The refusal is not always a
- * write grant - an unreadable descriptor or a reparse point lands here too - so
- * a caller that phrases it as one is guessing. */
+/* Whether a file is ours, saying why when it is not. Every refusal here is
+ * logged rather than summarised, because the cause is not always a write grant
+ * - an unreadable descriptor or a reparse point lands here too - and a caller
+ * that phrases it as one is guessing. */
 bool file_is_trusted(const wchar_t *lead, const fs::path &path)
 {
 	std::wstring why;
@@ -575,6 +571,10 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 	const TrustReport before = chain_trust(dir);
 	const bool dir_was_trusted = before.object;
 	bool file_was_trusted[std::size(kHookPairs)][2] = {};
+	/* kept alongside the sample: after the hardening below, a fresh check
+	 * would report the descriptor we just applied rather than the one that
+	 * earned the deletion */
+	std::wstring file_why[std::size(kHookPairs)][2];
 	bool pair_was_trusted[std::size(kHookPairs)] = {};
 
 	/* Nothing an elevated writer can repair, and no reason to distrust the
@@ -584,14 +584,24 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 		wlog_warn(L"The hook directory is reached through %s, which %s", before.ancestor.c_str(), before.ancestor_why.c_str());
 
 	for (size_t i = 0; i < std::size(kHookPairs); i++) {
-		file_was_trusted[i][0] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].dll);
-		file_was_trusted[i][1] = dir_was_trusted && path_is_trusted(dir / kHookPairs[i].manifest);
+		const wchar_t *const names[] = {kHookPairs[i].dll, kHookPairs[i].manifest};
+
+		for (size_t j = 0; j < std::size(names); j++) {
+			const bool trusted = object_is_trusted(dir / names[j], kWriteAccess, &file_why[i][j]);
+
+			file_was_trusted[i][j] = dir_was_trusted && trusted;
+			if (trusted && !dir_was_trusted)
+				file_why[i][j] = L"sat in a directory that was not ours";
+		}
+
 		pair_was_trusted[i] = file_was_trusted[i][0] && file_was_trusted[i][1];
 	}
 
 	/* unlink a junction rather than working through it to its target */
 	std::error_code ec;
 	if (is_reparse_point(dir)) {
+		wlog_warn(L"Hook directory %s is a reparse point; unlinking it rather than working through it", dir.c_str());
+
 		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
 			remove_vulkan_layer_registry();
@@ -627,9 +637,9 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 				continue;
 
 			if (DeleteFileW(file.c_str()))
-				wlog_warn(L"Deleted %s: it was modifiable by non-administrators", file.c_str());
+				wlog_warn(L"Deleted %s: it %s", file.c_str(), file_why[i][j].c_str());
 			else
-				wlog_warn(L"Could not delete untrusted %s: %lu", file.c_str(), GetLastError());
+				wlog_warn(L"Could not delete %s, which %s: %lu", file.c_str(), file_why[i][j].c_str(), GetLastError());
 		}
 	}
 
@@ -640,8 +650,15 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 	const TrustReport after = chain_trust(dir);
 	bool hooks_trusted = true;
 
-	for (const HookPair &pair : kHookPairs)
-		hooks_trusted = hooks_trusted && path_is_trusted(dir / pair.dll) && path_is_trusted(dir / pair.manifest);
+	/* every one of them, not just the first: a log that names one missing
+	 * file when two are missing sends the next reader looking for the wrong
+	 * thing */
+	for (const HookPair &pair : kHookPairs) {
+		for (const wchar_t *name : {pair.dll, pair.manifest}) {
+			if (!file_is_trusted(L"Shared hook", dir / name))
+				hooks_trusted = false;
+		}
+	}
 
 	/* The layer is kept by a directory that is ours holding a full set of
 	 * trusted hooks. The path above it is reported and nothing else - see
