@@ -29,7 +29,7 @@ FileUpdater::~FileUpdater()
 
 void FileUpdater::update()
 {
-	std::string version_file_key = "resources\app.asar";
+	std::string version_file_key = "resources\\app.asar";
 	manifest_map_t::const_iterator iter = m_manifest.begin();
 
 	while (iter != m_manifest.end()) {
