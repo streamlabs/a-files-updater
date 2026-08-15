@@ -23,6 +23,10 @@ struct update_parameters {
 	fs::path log_file_path;
 	FILE *log_file = nullptr;
 	bool interactive = true;
+	/* Whether a process holding the graphics hook directory open is worth
+	 * stopping the user over. Off still repairs and still reports; it only
+	 * takes away the ask, so the app can withdraw it without a new updater. */
+	bool hook_prompt = true;
 	bool restart_on_fail = false;
 	bool enable_removing_old_files = false;
 	std::string details;

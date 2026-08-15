@@ -146,6 +146,7 @@ struct callbacks_impl : public install_callbacks,
 	bool should_start{false};
 	bool should_cancel{false};
 	bool should_kill_blockers{false};
+	blocker_kind current_blocker_kind{blocker_kind::generic};
 	bool should_continue{false};
 	bool notify_restart{false};
 	bool finished_downloading{false};
@@ -192,9 +193,15 @@ struct callbacks_impl : public install_callbacks,
 	void pid_wait_finished(uint64_t pid) final {}
 	void pid_wait_complete() final {}
 
-	void blocker_start(bool is_virtualcam_phase) final;
+	void blocker_start(blocker_kind kind) final;
 	int blocker_waiting_for(const std::vector<blocker_info> &blockers, bool list_changed) final;
 	void blocker_wait_complete() final;
+
+	/* The update path secures the hook directory before it downloads
+	 * anything, with the client driving the dialog from its worker thread.
+	 * A run that never gets that far does it here instead: no worker, no
+	 * message loop, and a window that is ours to pump. */
+	void run_hook_repair_ui();
 
 	void disk_space_check_start() final;
 	int disk_space_waiting_for(const std::wstring &app_dir, size_t app_dir_free_space, const std::wstring &temp_dir, size_t temp_dir_free_space,
@@ -207,8 +214,8 @@ struct callbacks_impl : public install_callbacks,
 	void updater_complete() final {}
 	void hook_repair_start() final;
 
-	/* Set by hook_repair_start, so wWinMain can tell whether the update path
-	 * already covered the repair or has to fall back to running it silently. */
+	/* Set by whichever path already ran the repair, so wWinMain can tell
+	 * whether it still has to fall back to running it silently. */
 	bool hook_repair_ran{false};
 
 	bool prompt_user(const char *pVersion, const char *pDetails);
@@ -860,18 +867,26 @@ void callbacks_impl::downloader_complete(const bool success)
 	finished_downloading = success;
 }
 
-void callbacks_impl::blocker_start(bool is_virtualcam_phase)
+void callbacks_impl::blocker_start(blocker_kind kind)
 {
 	ShowWindow(progress_worker, SW_HIDE);
 
+	current_blocker_kind = kind;
+
 	std::wstring blocking_app_label;
-	if (is_virtualcam_phase) {
-		blocking_app_label = ConvertToUtf16WS(boost::locale::translate(
-			"These apps are currently using our virtual webcam driver, which prevents updating.\n"
-			"Please close them until the update is finished:"));
-	} else {
+	switch (kind) {
+	case blocker_kind::virtualcam:
 		blocking_app_label =
-			ConvertToUtf16WS(boost::locale::translate("Please close these apps until the update is finished:"));
+			ConvertToUtf16WS(boost::locale::translate("These apps are currently using our virtual webcam driver, which prevents updating.\n"
+								  "Please close them until the update is finished:"));
+		break;
+	case blocker_kind::hook:
+		blocking_app_label = ConvertToUtf16WS(boost::locale::translate("These apps are using the graphics hook, which stops us from securing it.\n"
+									       "Close them to let the update repair it, or skip:"));
+		break;
+	case blocker_kind::generic:
+		blocking_app_label = ConvertToUtf16WS(boost::locale::translate("Please close these apps until the update is finished:"));
+		break;
 	}
 
 	HDC hdc = GetDC(frame);
@@ -889,8 +904,22 @@ void callbacks_impl::blocker_start(bool is_virtualcam_phase)
 
 	active_panel = blocker_panel_.get();
 	active_panel->show();
-	ShowWindow(kill_button, SW_SHOW);
+	/* Nothing to stop in the hook phase: the update goes ahead either way,
+	 * and closing a game out from under someone to re-permission a
+	 * directory is not a trade we offer. */
+	ShowWindow(kill_button, kind == blocker_kind::hook ? SW_HIDE : SW_SHOW);
 	ShowWindow(cancel_button, SW_SHOW);
+
+	if (kind == blocker_kind::hook) {
+		std::wstring skip_label = ConvertToUtf16WS(boost::locale::translate("Skip"));
+		{
+			std::lock_guard<std::mutex> lock(cancel_label_mutex);
+			if (saved_cancel_label.empty())
+				saved_cancel_label = cancel_label;
+			cancel_label = skip_label;
+		}
+		SetWindowTextW(cancel_button, skip_label.c_str());
+	}
 
 	repostionUI();
 
@@ -903,6 +932,11 @@ int callbacks_impl::blocker_waiting_for(const std::vector<blocker_info> &blocker
 	int ret = 0;
 	if (should_cancel) {
 		should_cancel = false;
+		/* Skipping the hook repair cancels nothing, so the error
+		 * suppression the cancel button arms has nothing to suppress
+		 * and would sit there waiting for an unrelated failure. */
+		if (current_blocker_kind == blocker_kind::hook)
+			cancel_silent = false;
 		ret = 2;
 	} else if (should_kill_blockers) {
 		should_kill_blockers = false;
@@ -934,7 +968,87 @@ void callbacks_impl::blocker_wait_complete()
 	ShowWindow(cancel_button, SW_HIDE);
 	SetWindowTextW(progress_label, L"");
 
+	/* no-op unless the hook phase relabelled it to Skip */
+	restore_cancel_button_text();
+
 	ShowWindow(progress_worker, SW_SHOW);
+}
+
+/* Dispatches for up to ms milliseconds, then returns. Unlike run_message_loop
+ * there is no decision to wait for here - the loop exists so the dialog stays
+ * alive between two probes of who is holding the hook. */
+static void pump_messages_for(HWND frame, DWORD ms)
+{
+	const ULONGLONG deadline = GetTickCount64() + ms;
+	MSG msg;
+
+	while (true) {
+		const ULONGLONG now = GetTickCount64();
+		if (now >= deadline)
+			return;
+
+		if (MsgWaitForMultipleObjects(0, nullptr, FALSE, static_cast<DWORD>(deadline - now), QS_ALLINPUT) == WAIT_TIMEOUT)
+			return;
+
+		while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+			if (msg.message == WM_QUIT) {
+				/* not ours to swallow: the window is going away */
+				PostQuitMessage(static_cast<int>(msg.wParam));
+				return;
+			}
+
+			if (!IsDialogMessage(frame, &msg)) {
+				TranslateMessage(&msg);
+				DispatchMessage(&msg);
+			}
+		}
+	}
+}
+
+void callbacks_impl::run_hook_repair_ui()
+{
+	HookRepairState state;
+
+	hook_repair_ran = true;
+
+	if (secure_hook_directory(state) == HookSecure::Blocked) {
+		std::vector<blocker_info> blockers = get_hook_dir_blockers();
+		log_blockers("Hook directory is held open by", blockers);
+
+		if (!blockers.empty() && params.interactive && params.hook_prompt) {
+			std::wstring shown;
+
+			ShowWindow(frame, SW_SHOWNORMAL);
+			blocker_start(blocker_kind::hook);
+			should_cancel = false;
+
+			while (!blockers.empty()) {
+				std::wstring listed;
+				for (const blocker_info &info : blockers)
+					listed += info.app_name + L" (" + std::to_wstring(info.pid) + L")\r\n";
+
+				const bool list_changed = shown.compare(listed) != 0;
+				shown = listed;
+
+				if (blocker_waiting_for(blockers, list_changed) == 2) {
+					log_info("User skipped the hook directory repair");
+					break;
+				}
+
+				pump_messages_for(frame, 1000);
+
+				if (secure_hook_directory(state) != HookSecure::Blocked)
+					break;
+
+				blockers = get_hook_dir_blockers();
+			}
+
+			blocker_wait_complete();
+			ShowWindow(frame, SW_HIDE);
+		}
+	}
+
+	report_hook_repair(publish_hook_payload(params.app_dir, state));
 }
 
 void callbacks_impl::disk_space_check_start()
@@ -1750,6 +1864,10 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	callbacks_impl &cb_impl = *cb_impl_storage;
 
 	if (!cb_impl.prompt_user(params.version.c_str(), params.details.c_str())) {
+		/* Before success(), which queues the window's destruction: the
+		 * repair may still have a dialog to put in it. */
+		cb_impl.run_hook_repair_ui();
+
 		//act as if we updated so app will be launched
 		cb_impl.success();
 	} else {
@@ -1792,10 +1910,11 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		update_client_flush(client.get());
 	}
 
-	/* Every path that did not reach the step inside the update: a declined
-	 * update, a failed one, or nothing to update. Repairing machines that are
-	 * already current is most of the reason this lives in the updater, so it
-	 * still has to run - just with no window left to show it in. */
+	/* What is left is a failed update or a cancelled one, where the window
+	 * was already torn down before control came back here. Repairing
+	 * machines the update never reached is most of the reason this lives in
+	 * the updater, so it still has to run - just with nothing to show it
+	 * in, and nobody to ask about a process holding the directory open. */
 	if (!cb_impl.hook_repair_ran)
 		report_hook_repair(repair_hook_directory(params.app_dir));
 

@@ -55,10 +55,12 @@ void update_client::start_file_update()
 			log_info("Finished updating files without errors.");
 
 			/* Before success(), which tears the window down: this is
-			 * the last point at which there is a UI to show it in. */
+			 * the last point at which there is a UI to show it in.
+			 * The directory was secured before the download; what
+			 * is left is publishing the files we just installed. */
 			if (updater_events)
 				updater_events->hook_repair_start();
-			report_hook_repair(repair_hook_directory(params->app_dir));
+			report_hook_repair(publish_hook_payload(params->app_dir, hook_state));
 
 			client_events->success();
 			updated = true;
@@ -268,7 +270,6 @@ void update_client::handle_resolve(const boost::system::error_code &error, resol
 update_client::update_client(struct update_parameters *params)
 	: params(params),
 	  wait_for_blockers(io_ctx),
-	  show_user_blockers_list(true),
 	  active_workers(0),
 	  resolver(io_ctx),
 	  package_download_timer(io_ctx),
@@ -822,6 +823,66 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 
 std::mutex manifest_result_mutex;
 
+static std::wstring format_blocker_list(const std::vector<blocker_info> &blockers)
+{
+	std::wstring text;
+
+	for (const blocker_info &info : blockers) {
+		text += info.app_name;
+		text += L" (";
+		text += std::to_wstring(info.pid);
+		text += L")\r\n";
+	}
+
+	return text;
+}
+
+/* Secures the shared hook directory, and asks the user to close whatever is
+ * holding it open when it has to be replaced and cannot be. Declining is
+ * allowed - the update needs nothing from that directory, and the publishing
+ * half tries once more at the end, by which time the holder may have exited.
+ *
+ * Returns false while the dialog is up, having re-armed the timer. */
+bool update_client::process_hook_blockers()
+{
+	if (secure_hook_directory(hook_state) != HookSecure::Blocked)
+		return true;
+
+	std::vector<blocker_info> blocker_details = get_hook_dir_blockers();
+
+	/* Nothing to name, nobody to ask, or asking is turned off: the repair
+	 * is retried and reported at the end of the update either way. */
+	if (blocker_details.empty() || !params->interactive || !params->hook_prompt) {
+		log_blockers("Hook directory is held open by", blocker_details);
+		return true;
+	}
+
+	if (shown_blocker_kind != blocker_kind::hook) {
+		shown_blocker_kind = blocker_kind::hook;
+		process_list_text = L"";
+		this->blocker_events->blocker_start(blocker_kind::hook);
+	}
+
+	std::wstring new_process_list_text = format_blocker_list(blocker_details);
+	bool list_changed = process_list_text.compare(new_process_list_text) != 0;
+
+	/* once per change rather than once per second */
+	if (list_changed)
+		log_blockers("Hook directory is held open by", blocker_details);
+
+	process_list_text = new_process_list_text;
+
+	/* No stop-all button in this phase, so 1 cannot arrive */
+	if (this->blocker_events->blocker_waiting_for(blocker_details, list_changed) == 2) {
+		log_info("User skipped the hook directory repair");
+		return true;
+	}
+
+	wait_for_blockers.expires_after(std::chrono::seconds(1));
+	wait_for_blockers.async_wait([this](const boost::system::error_code &) { process_manifest_results(); });
+	return false;
+}
+
 void update_client::process_manifest_results()
 {
 	std::unique_lock<std::mutex> lock(manifest_result_mutex, std::try_to_lock);
@@ -857,17 +918,11 @@ void update_client::process_manifest_results()
 		if (current_blocker_phase == blocker_phase::virtualcam && vcam_only_blockers.list.size() > 0) {
 			auto blocker_details = get_blocker_details(vcam_only_blockers);
 
-			std::wstring new_process_list_text;
-			for (auto &info : blocker_details) {
-				new_process_list_text += info.app_name;
-				new_process_list_text += L" (";
-				new_process_list_text += std::to_wstring(info.pid);
-				new_process_list_text += L")\r\n";
-			}
+			std::wstring new_process_list_text = format_blocker_list(blocker_details);
 
-			if (show_user_blockers_list) {
-				show_user_blockers_list = false;
-				this->blocker_events->blocker_start(true);
+			if (shown_blocker_kind != blocker_kind::virtualcam) {
+				shown_blocker_kind = blocker_kind::virtualcam;
+				this->blocker_events->blocker_start(blocker_kind::virtualcam);
 			}
 
 			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
@@ -909,9 +964,9 @@ void update_client::process_manifest_results()
 
 		// Transition from virtualcam phase to generic phase
 		if (current_blocker_phase == blocker_phase::virtualcam) {
-			if (!show_user_blockers_list) {
+			if (shown_blocker_kind) {
 				this->blocker_events->blocker_wait_complete();
-				show_user_blockers_list = true;
+				shown_blocker_kind.reset();
 				process_list_text = L"";
 			}
 			current_blocker_phase = blocker_phase::generic;
@@ -921,17 +976,11 @@ void update_client::process_manifest_results()
 		if (blockers.list.size() > 0) {
 			auto blocker_details = get_blocker_details(blockers);
 
-			std::wstring new_process_list_text;
-			for (auto &info : blocker_details) {
-				new_process_list_text += info.app_name;
-				new_process_list_text += L" (";
-				new_process_list_text += std::to_wstring(info.pid);
-				new_process_list_text += L")\r\n";
-			}
+			std::wstring new_process_list_text = format_blocker_list(blocker_details);
 
-			if (show_user_blockers_list) {
-				show_user_blockers_list = false;
-				this->blocker_events->blocker_start(false);
+			if (shown_blocker_kind != blocker_kind::generic) {
+				shown_blocker_kind = blocker_kind::generic;
+				this->blocker_events->blocker_start(blocker_kind::generic);
 			}
 
 			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
@@ -969,10 +1018,25 @@ void update_client::process_manifest_results()
 			wait_for_blockers.expires_after(std::chrono::seconds(1));
 			wait_for_blockers.async_wait([this](const boost::system::error_code &) { process_manifest_results(); });
 			return;
-		} else {
+		} else if (current_blocker_phase == blocker_phase::generic) {
 			this->blocker_events->blocker_wait_complete();
-			show_user_blockers_list = true;
+			shown_blocker_kind.reset();
 			process_list_text = L"";
+			current_blocker_phase = blocker_phase::hook;
+		}
+
+		/* Phase 3: the shared graphics hook directory. Last, so a user
+		 * who cancels over a blocker they have to close is never asked
+		 * about one they may decline. */
+		if (current_blocker_phase == blocker_phase::hook) {
+			if (!process_hook_blockers())
+				return;
+
+			if (shown_blocker_kind) {
+				this->blocker_events->blocker_wait_complete();
+				shown_blocker_kind.reset();
+				process_list_text = L"";
+			}
 			current_blocker_phase = blocker_phase::virtualcam;
 		}
 

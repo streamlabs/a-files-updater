@@ -174,22 +174,25 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	struct arg_int *interactive_arg = arg_intn("i", "interactive", "<interactive>", 0, 1, "Show user modal message boxes");
 
+	struct arg_int *hook_prompt_arg =
+		arg_intn(NULL, "hook-prompt", "<hook-prompt>", 0, 1, "Ask the user to close whatever is holding the graphics hook directory open");
+
 	struct arg_lit *restart_arg = arg_lit0(NULL, "restart-after-fail", "Start Streamlabs Desktop after update fail with option to skip update");
 
 	struct arg_str *details_arg = arg_str1("d", "details", "<file>", "Path to the file containing details of the update");
 
 	struct arg_end *end_arg = arg_end(255);
 
-	void *arg_table[] = {help_arg,     dump_args_arg, force_arg, base_uri_arg,    app_dir_arg, exec_arg,    cwd_arg,
-			     temp_dir_arg, version_arg,   pids_arg,  interactive_arg, restart_arg, details_arg, end_arg};
+	void *arg_table[] = {help_arg,    dump_args_arg, force_arg,       base_uri_arg,    app_dir_arg, exec_arg,    cwd_arg, temp_dir_arg,
+			     version_arg, pids_arg,      interactive_arg, hook_prompt_arg, restart_arg, details_arg, end_arg};
 
 	const int arg_table_sz = sizeof(arg_table) / sizeof(arg_table[0]);
 
 	int num_errors = arg_parse(argc, argv, arg_table);
 
 	/* We need type information to dump parameters generically */
-	enum arg_type arg_table_types[arg_table_sz] = {ARG_LITERAL, ARG_LITERAL, ARG_LITERAL, ARG_STRING,  ARG_STRING,  ARG_STRING, ARG_STRING,
-						       ARG_STRING,  ARG_STRING,  ARG_INTEGER, ARG_INTEGER, ARG_LITERAL, ARG_STRING, ARG_END};
+	enum arg_type arg_table_types[arg_table_sz] = {ARG_LITERAL, ARG_LITERAL, ARG_LITERAL, ARG_STRING,  ARG_STRING,  ARG_STRING, ARG_STRING, ARG_STRING,
+						       ARG_STRING,  ARG_INTEGER, ARG_INTEGER, ARG_INTEGER, ARG_LITERAL, ARG_STRING, ARG_END};
 
 	/* Here we assume that stdout is setup correctly, otherwise --help is pointless */
 	if (help_arg->count > 0) {
@@ -308,6 +311,10 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	if (interactive_arg->count > 0) {
 		params->interactive = interactive_arg->ival[0];
+	}
+
+	if (hook_prompt_arg->count > 0) {
+		params->hook_prompt = hook_prompt_arg->ival[0];
 	}
 
 	if (restart_arg->count > 0) {
