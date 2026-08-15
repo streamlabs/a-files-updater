@@ -18,7 +18,9 @@
 #include <sddl.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -506,6 +508,97 @@ void volume_root_delete_is_not_held_against_the_path(const fs::path &volume_root
 	fs::remove_all(c.root, ec);
 }
 
+const wchar_t *const kScratchLeaf = L"slobs-hook-tests";
+
+std::wstring lowered(std::wstring text)
+{
+	for (wchar_t &c : text)
+		c = towlower(c);
+
+	return text;
+}
+
+bool inside(const fs::path &path, const wchar_t *variable)
+{
+	wchar_t *value = nullptr;
+	size_t length = 0;
+
+	if (_wdupenv_s(&value, &length, variable) != 0 || !value)
+		return false;
+
+	const std::wstring prefix = lowered(fs::path(value).make_preferred().wstring()) + L"\\";
+	const bool within = lowered(path.wstring()).rfind(prefix, 0) == 0;
+
+	free(value);
+	return within;
+}
+
+/* Everything below the scratch root is deleted recursively by a process
+ * running elevated, so the path has to be one that cannot be anything else.
+ * Resolved first, because .. and a symlink both spell a path that is not the
+ * one it looks like, and compared without case, because Windows does. The leaf
+ * name is the load-bearing rule: nothing that matters is called this, and no
+ * volume root or system directory can be. */
+bool resolve_scratch(fs::path &scratch)
+{
+	std::error_code ec;
+	const fs::path resolved = fs::weakly_canonical(fs::absolute(scratch, ec), ec).make_preferred();
+
+	if (ec) {
+		printf("Refusing --scratch %ls: it cannot be resolved (%d)\n", scratch.c_str(), ec.value());
+		return false;
+	}
+
+	if (!resolved.has_relative_path() || !resolved.parent_path().has_relative_path()) {
+		printf("Refusing --scratch %ls: it is a volume root or sits directly in one\n", resolved.c_str());
+		return false;
+	}
+
+	if (lowered(resolved.filename().wstring()) != kScratchLeaf) {
+		printf("Refusing --scratch %ls: the leaf must be %ls\n", resolved.c_str(), kScratchLeaf);
+		return false;
+	}
+
+	if (inside(resolved, L"SystemRoot") || inside(resolved, L"ProgramFiles") || inside(resolved, L"ProgramFiles(x86)")) {
+		printf("Refusing --scratch %ls: it is inside a system directory\n", resolved.c_str());
+		return false;
+	}
+
+	scratch = resolved;
+	return true;
+}
+
+/* The volume root case needs an actual root, and never deletes it - only the
+ * case directory made below it. Still not the system drive: a mistake there
+ * would land in the one place nobody can re-provision. */
+bool resolve_volume_root(fs::path &volume_root)
+{
+	std::error_code ec;
+	const fs::path resolved = fs::weakly_canonical(fs::absolute(volume_root, ec), ec).make_preferred();
+
+	if (ec || resolved.has_relative_path()) {
+		printf("Refusing --volume-root %ls: it must be a volume root, such as X:\\\n", volume_root.c_str());
+		return false;
+	}
+
+	wchar_t *system_drive = nullptr;
+	size_t length = 0;
+	bool is_system = false;
+
+	if (_wdupenv_s(&system_drive, &length, L"SystemDrive") == 0 && system_drive) {
+		is_system = lowered(resolved.root_name().wstring()) == lowered(system_drive);
+		free(system_drive);
+	}
+
+	if (is_system) {
+		printf("Refusing --volume-root %ls: mount a scratch volume instead of using the system drive\n", resolved.c_str());
+		return false;
+	}
+
+	volume_root = resolved;
+	return true;
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t **argv)
@@ -513,7 +606,7 @@ int wmain(int argc, wchar_t **argv)
 	/* Beside the real hook directory rather than under %TEMP%: the ancestor
 	 * walk reaches the drive root, and a tree below a user-owned directory
 	 * reports AncestorUntrusted in every case. */
-	fs::path scratch = programdata_hook_dir().parent_path() / L"slobs-hook-tests";
+	fs::path scratch = programdata_hook_dir().parent_path() / kScratchLeaf;
 	fs::path volume_root;
 
 	for (int i = 1; i < argc; i++) {
@@ -525,13 +618,16 @@ int wmain(int argc, wchar_t **argv)
 			volume_root = argv[++i];
 	}
 
+	/* before the elevation check, so a bad path is answered as the argument
+	 * error it is rather than hiding behind a missing privilege */
+	if (!resolve_scratch(scratch))
+		return 2;
+
+	if (!volume_root.empty() && !resolve_volume_root(volume_root))
+		return 2;
+
 	if (!elevated()) {
 		printf("These tests take ownership and rewrite DACLs; run them from an elevated terminal.\n");
-		return 2;
-	}
-
-	if (scratch == programdata_hook_dir()) {
-		printf("Refusing to run against the real hook directory.\n");
 		return 2;
 	}
 

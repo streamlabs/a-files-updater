@@ -49,25 +49,59 @@ function make_untrusted(dir) {
   return run(`takeown /f "${dir}" /d Y`) && run(`icacls "${dir}" /grant *S-1-5-32-545:(OI)(CI)F`);
 }
 
+function sleep_ms(ms) {
+  cp.execSync(`ping -n 1 -w ${ms} 127.0.0.1`, { stdio: 'ignore', shell: true });
+}
+
+/* Windows denies write access to a mapped image, so the open failing is the
+ * signal that the holder is up and the directory can no longer be renamed. */
+function image_is_mapped(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r+');
+  } catch (e) {
+    return true;
+  }
+  fs.closeSync(fd);
+  return false;
+}
+
 /* A running image is open without FILE_SHARE_DELETE for as long as it lives,
  * which is exactly what a hooked game does to graphics-hook64.dll and exactly
  * what stops the directory being renamed out from under it. The blocker the
  * pack already uses is copied under the hook's name so the Restart Manager
- * probe, which only asks about the four names we own, can find it. */
+ * probe, which only asks about the four names we own, can find it.
+ *
+ * Launched without a shell: cmd dispatches on the extension and will not run
+ * a .dll, and even where it would, spawn returns once cmd starts rather than
+ * once the image is mapped - the updater would then race the holder and the
+ * blocked case would quietly test the successful one instead. */
 function start_holder(testinfo) {
   const blocker = path.join(__dirname, '..', 'resources', 'file_self_blocker_v1.exe');
   const held = path.join(exports.hook_dir, 'graphics-hook64.dll');
 
   fse.copySync(blocker, held);
 
-  holder_process = cp.spawn(held, ['-t 60'], {
+  holder_process = cp.spawn(held, ['-t', '60'], {
     cwd: exports.hook_dir,
     detached: true,
-    shell: true,
+    shell: false,
+    stdio: 'ignore',
   });
 
-  if (testinfo.more_log_output)
-    console.log('Hook directory holder pid = ' + holder_process.pid);
+  holder_process.on('error', (e) => console.log('Hook directory holder failed to start: ' + e.message));
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (image_is_mapped(held)) {
+      if (testinfo.more_log_output)
+        console.log('Hook directory holder pid = ' + holder_process.pid);
+      return true;
+    }
+    sleep_ms(100);
+  }
+
+  console.log('Hook directory holder never took hold of ' + held);
+  return false;
 }
 
 exports.prepare = function (testinfo) {
@@ -85,8 +119,8 @@ exports.prepare = function (testinfo) {
   if (!make_untrusted(exports.hook_dir))
     return false;
 
-  if (testinfo.hookDirBlocked)
-    start_holder(testinfo);
+  if (testinfo.hookDirBlocked && !start_holder(testinfo))
+    return false;
 
   return true;
 };
@@ -107,31 +141,50 @@ exports.cleanup = function (testinfo) {
       fse.removeSync(scratch_root);
       return;
     } catch (e) {
-      cp.execSync('ping -n 1 -w 200 127.0.0.1 > nul', { shell: true });
+      sleep_ms(200);
     }
   }
 
   console.log('Could not remove ' + scratch_root);
 };
 
-function reported_category(testinfo) {
+/* Three outcomes, deliberately distinct: no report was sent at all, one was
+ * sent and names a category, or one was sent and could not be read. Folding
+ * the third into the first would let a malformed report pass as silence.
+ *
+ * The emulator answers the POST before it finishes writing the file, so both
+ * "is it there" and "is it complete" are waited for rather than sampled once. */
+function reported_category(testinfo, expect_report) {
   const report_path = path.join(testinfo.reporterDir, 'crash_report.json');
+  const deadline = Date.now() + (expect_report ? 5000 : 1000);
+  let last_error = null;
 
-  if (!fs.existsSync(report_path))
-    return '';
+  do {
+    if (fs.existsSync(report_path)) {
+      try {
+        /* prepare_crash_report puts the category in
+         * exception.values[0].type; the attached log carries the same
+         * words, so read the field rather than searching the body */
+        const report = JSON.parse(fs.readFileSync(report_path, 'utf8'));
+        const values = report.exception && report.exception.values;
 
-  /* prepare_crash_report puts the category in exception.values[0].type; the
-   * attached log carries the same words, so read the field rather than
-   * searching the body */
-  try {
-    const report = JSON.parse(fs.readFileSync(report_path, 'utf8'));
-    const values = report.exception && report.exception.values;
+        return (values && values.length && values[0].type) || '<report without a category>';
+      } catch (e) {
+        last_error = e;
+      }
+    } else if (!expect_report) {
+      /* nothing to wait for, but give a late write a moment to appear */
+    }
 
-    return (values && values.length && values[0].type) || '';
-  } catch (e) {
-    console.log('Could not read the crash report: ' + e);
-    return '';
+    sleep_ms(200);
+  } while (Date.now() < deadline);
+
+  if (last_error) {
+    console.log('Crash report at ' + report_path + ' could not be read: ' + last_error.message);
+    return '<unreadable report>';
   }
+
+  return '';
 }
 
 exports.check = function (testinfo) {
@@ -141,10 +194,11 @@ exports.check = function (testinfo) {
   let ok = true;
 
   if (testinfo.expectedHookReport !== undefined) {
-    const category = reported_category(testinfo);
+    const category = reported_category(testinfo, testinfo.expectedHookReport !== '');
 
     if (category !== testinfo.expectedHookReport) {
-      console.log(`Hook report was "${category}", expected "${testinfo.expectedHookReport}"`);
+      const wanted = testinfo.expectedHookReport === '' ? 'no report' : `"${testinfo.expectedHookReport}"`;
+      console.log(`Hook report was "${category}", expected ${wanted}`);
       ok = false;
     }
   }
