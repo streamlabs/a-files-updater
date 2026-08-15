@@ -4,8 +4,10 @@
 #include <atomic>
 #include <cstdint>
 #include <fstream>
+#include <optional>
 #include "utils.hpp"
 #include "checksum-filters.hpp"
+#include "hook-permissions.hpp"
 #include "update-client.hpp"
 
 /*##############################################
@@ -104,15 +106,20 @@ struct update_client {
 	std::vector<std::thread> thread_pool;
 
 	boost::asio::steady_timer wait_for_blockers;
-	bool show_user_blockers_list;
+	/* what the blocker panel is currently showing, empty when it is not up */
+	std::optional<blocker_kind> shown_blocker_kind;
 	std::wstring process_list_text;
 
 	std::atomic<bool> install_packages_cancelled{false};
 	boost::asio::steady_timer package_download_timer;
 	std::atomic<uintptr_t> active_package_native_socket{~uintptr_t(0)};
 
-	enum class blocker_phase { virtualcam, generic };
+	enum class blocker_phase { virtualcam, generic, hook };
 	blocker_phase current_blocker_phase{blocker_phase::virtualcam};
+
+	/* Carries the securing half, which runs before the download, to the
+	 * publishing half at the end of the update. */
+	HookRepairState hook_state;
 
 	bool update_download_aborted = false;
 	std::string download_abort_message;
@@ -142,6 +149,8 @@ public:
 	void handle_resolve(const boost::system::error_code &error, resolver_type::results_type results);
 	void handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content);
 	void process_manifest_results();
+	/* false while the user is still being asked to close a hook holder */
+	bool process_hook_blockers();
 	void checkup_files(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers, int from, int to);
 	void checkup_manifest(struct blockers_map_t &blockers, struct blockers_map_t &virtualcam_blockers);
 

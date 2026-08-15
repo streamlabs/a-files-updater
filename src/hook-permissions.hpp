@@ -1,6 +1,9 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <filesystem>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -14,6 +17,12 @@ namespace fs = std::filesystem;
  * when the payload is missing or sits somewhere a standard user could rewrite.
  * It is still worth attempting, because only an elevated writer can fill the
  * hardened directory and the app usually is not one.
+ *
+ * That division is also where the two halves split. The securing half needs
+ * nothing from the update, so it can run before the download, at the one moment
+ * the user is stopped in front of a window and a process holding the directory
+ * open is still something they can be asked about. The publishing half needs
+ * the new files and runs after them.
  *
  * Fails closed: a directory this cannot leave holding a full set of trusted
  * hooks ends with the vulkan implicit layer unregistered rather than pointing
@@ -50,7 +59,8 @@ namespace fs = std::filesystem;
  *     this width: a collision is not a failure mode, and everything else that
  *     fails the rename is a property of the source rather than the name. A
  *     handle held open without FILE_SHARE_DELETE fails it under every name
- *     there is, so the error is logged and reported instead of papered over.
+ *     there is, so that one comes back as Blocked for the caller to ask about
+ *     rather than being retried here.
  *   - Ownership and ACLs are reset only on a file we just wrote. Doing it to
  *     one we merely found relabels it as administrator-installed, which is
  *     exactly what the app reads to decide what to inject into other
@@ -77,12 +87,51 @@ namespace fs = std::filesystem;
 enum class HookRepair {
 	Secured,
 	AncestorUntrusted,
+	QuarantineBlocked,
 	Failed,
 };
 
+/* How the securing half came out. Blocked is the one a user can do something
+ * about: the directory has to be replaced rather than repaired, and somebody
+ * holds a file in it open. */
+enum class HookSecure {
+	Secured,
+	Blocked,
+	Failed,
+};
+
+constexpr size_t kHookPairCount = 2;
+
+/* What the securing half learned, for the publishing half to read back. The
+ * trust sample has to cross with it: hardening the directory propagates to the
+ * children, so afterwards a file that was writable only through an inherited
+ * ACE reads as administrator-installed. */
+struct HookRepairState {
+	fs::path dir;
+	std::array<bool, kHookPairCount> pair_was_trusted{};
+	bool attempted = false;
+	HookSecure outcome = HookSecure::Failed;
+};
+
+HookSecure secure_hook_directory(HookRepairState &state);
+
+/* Secures first if the caller has not, and again if that came back Blocked or
+ * if the directory has changed hands since - whoever held it may have exited
+ * while the files downloaded, and a sample taken minutes ago is not something
+ * to publish on. */
+HookRepair publish_hook_payload(const fs::path &app_dir, HookRepairState &state);
+
+/* Both halves back to back, for callers with no window to ask through. */
 HookRepair repair_hook_directory(const fs::path &app_dir);
 
+/* The files the securing half has to be able to rename out from under, for a
+ * caller that wants to ask the Restart Manager who is holding one. Only the
+ * names we own: enumerating the directory would follow whatever junctions a
+ * standard user left in it. */
+std::vector<fs::path> hook_dir_files();
+
 /* Raises the handled error the outcome deserves, if any. Separate categories:
- * an untrusted ancestor is an environment we cannot repair, and grouping it
- * with a failed repair would bury the one we can. */
+ * an untrusted ancestor is an environment we cannot repair, a blocked
+ * quarantine is one the user was asked about and declined or could not clear,
+ * and grouping either with a failed repair would bury the one we can act on. */
 void report_hook_repair(HookRepair result);

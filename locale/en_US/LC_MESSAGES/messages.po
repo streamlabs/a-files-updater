@@ -70,6 +70,14 @@ msgid ""
 msgstr ""
 "Please close these apps until the update is finished:"
 
+#: src\main.cc
+msgid ""
+"These apps are using the graphics hook, which stops us from securing it.\n"
+"Close them to let the update repair it, or skip:"
+msgstr ""
+"These apps are using the graphics hook, which stops us from securing it.\n"
+"Close them to let the update repair it, or skip:"
+
 #: src\main.cc:677
 msgid ""
 "Streamlabs Desktop requires at least 2GB of free disk space to update "
