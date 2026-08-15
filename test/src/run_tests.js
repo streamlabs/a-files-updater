@@ -237,6 +237,25 @@ async function run_tests() {
             failed_test_names.push(testinfo.testName);
         }
 
+        testinfo = test_config.gettestinfo(" //untrusted graphics hook directory is secured ");
+        testinfo.hookDirTest = true;
+        testinfo.expectedHookDirSecured = true;
+        testinfo.expectedHookReport = "";
+        test_result = await run_test.test_update(testinfo);
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
+        testinfo = test_config.gettestinfo(" //graphics hook held open, update goes ahead without the repair ");
+        testinfo.hookDirTest = true;
+        testinfo.hookDirBlocked = true;
+        testinfo.expectedHookDirSecured = false;
+        testinfo.expectedHookReport = "HookQuarantineBlocked";
+        test_result = await run_test.test_update(testinfo);
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
         testinfo = test_config.gettestinfo(" //empty details file");
         test_result = await run_test.test_update(testinfo);
         testinfo.version_details = "empty";

@@ -2,6 +2,8 @@ const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+const hook_dir = require('./hook_dir.js');
+
 exports.start_updater = async function (testinfo) {
   const updaterPath = path.join(testinfo.updaterDir, testinfo.updaterName)
   const updaterWorkPath = path.join(testinfo.updaterWorkDir, testinfo.updaterName)
@@ -31,6 +33,17 @@ exports.start_updater = async function (testinfo) {
       updaterArgs.push('-p');
       updaterArgs.push(pid);
     });
+  }
+
+  // keep the repair off the machine's real hook directory
+  if (testinfo.hookDirTest) {
+    updaterArgs.push('--hook-dir');
+    updaterArgs.push(`"${hook_dir.hook_dir.replace(/\\/g, '\\\\')}"`);
+  }
+
+  if (testinfo.hookPrompt !== undefined) {
+    updaterArgs.push('--hook-prompt');
+    updaterArgs.push(`"${testinfo.hookPrompt}"`);
   }
 
   if (testinfo.more_log_output)

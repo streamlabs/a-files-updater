@@ -273,15 +273,6 @@ bool enable_privilege(const wchar_t *name)
 	return success;
 }
 
-fs::path programdata_hook_dir()
-{
-	wchar_t path[MAX_PATH] = {};
-	if (FAILED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, path)))
-		return {};
-
-	return fs::path(path) / L"obs-studio-hook";
-}
-
 fs::path quarantine_name(const fs::path &dir)
 {
 	static const wchar_t digits[] = L"0123456789abcdef";
@@ -437,10 +428,8 @@ void delete_layer_value(HKEY root, DWORD wow_flag, const std::wstring &value)
 	RegCloseKey(key);
 }
 
-void remove_vulkan_layer_registry()
+void remove_vulkan_layer_registry(const fs::path &dir)
 {
-	const fs::path dir = programdata_hook_dir();
-
 	for (const HookPair &pair : kHookPairs) {
 		const std::wstring value = (dir / pair.manifest).wstring();
 
@@ -578,28 +567,36 @@ void publish_hooks(const fs::path &dir, const fs::path &source, const bool *pair
 
 } // namespace
 
-std::vector<fs::path> hook_dir_files()
+fs::path programdata_hook_dir()
 {
-	const fs::path dir = programdata_hook_dir();
+	wchar_t path[MAX_PATH] = {};
+	if (FAILED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, path)))
+		return {};
+
+	return fs::path(path) / L"obs-studio-hook";
+}
+
+std::vector<fs::path> hook_dir_files(const fs::path &hook_dir)
+{
 	std::vector<fs::path> files;
 
-	if (dir.empty())
+	if (hook_dir.empty())
 		return files;
 
 	for (const HookPair &pair : kHookPairs) {
-		files.push_back(dir / pair.dll);
-		files.push_back(dir / pair.manifest);
+		files.push_back(hook_dir / pair.dll);
+		files.push_back(hook_dir / pair.manifest);
 	}
 
 	return files;
 }
 
-HookSecure secure_hook_directory(HookRepairState &state)
+HookSecure secure_hook_directory(const fs::path &hook_dir, HookRepairState &state)
 {
 	state = {};
 	state.attempted = true;
 
-	state.dir = programdata_hook_dir();
+	state.dir = hook_dir;
 	const fs::path dir = state.dir;
 
 	if (dir.empty()) {
@@ -652,7 +649,7 @@ HookSecure secure_hook_directory(HookRepairState &state)
 
 		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
-			remove_vulkan_layer_registry();
+			remove_vulkan_layer_registry(dir);
 			return state.outcome;
 		}
 	}
@@ -663,7 +660,7 @@ HookSecure secure_hook_directory(HookRepairState &state)
 		const Quarantine moved = quarantine_hook_dir(dir);
 
 		if (moved != Quarantine::Moved) {
-			remove_vulkan_layer_registry();
+			remove_vulkan_layer_registry(dir);
 			if (moved == Quarantine::Blocked)
 				state.outcome = HookSecure::Blocked;
 			return state.outcome;
@@ -671,7 +668,7 @@ HookSecure secure_hook_directory(HookRepairState &state)
 	}
 
 	if ((!dir_was_trusted && !create_hook_dir(dir)) || !apply_hook_dir_security(dir)) {
-		remove_vulkan_layer_registry();
+		remove_vulkan_layer_registry(dir);
 		return state.outcome;
 	}
 
@@ -699,7 +696,7 @@ HookSecure secure_hook_directory(HookRepairState &state)
 	return state.outcome;
 }
 
-HookRepair publish_hook_payload(const fs::path &app_dir, HookRepairState &state)
+HookRepair publish_hook_payload(const fs::path &app_dir, const fs::path &hook_dir, HookRepairState &state)
 {
 	std::wstring drift_why;
 
@@ -714,7 +711,7 @@ HookRepair publish_hook_payload(const fs::path &app_dir, HookRepairState &state)
 		wlog_warn(L"Hook directory %s %s since it was secured; securing it again", state.dir.c_str(), drift_why.c_str());
 
 	if (drifted || !state.attempted || state.outcome == HookSecure::Blocked)
-		secure_hook_directory(state);
+		secure_hook_directory(hook_dir, state);
 
 	switch (state.outcome) {
 	case HookSecure::Secured:
@@ -749,7 +746,7 @@ HookRepair publish_hook_payload(const fs::path &app_dir, HookRepairState &state)
 	 * trusted hooks. The path above it is reported and nothing else - see
 	 * the header. */
 	if (!after.object || !hooks_trusted)
-		remove_vulkan_layer_registry();
+		remove_vulkan_layer_registry(dir);
 
 	if (!after.object) {
 		wlog_warn(L"The repair did not take - hook directory %s %s; the vulkan layer was unregistered", dir.c_str(), after.object_why.c_str());
@@ -770,12 +767,12 @@ HookRepair publish_hook_payload(const fs::path &app_dir, HookRepairState &state)
 	return HookRepair::Secured;
 }
 
-HookRepair repair_hook_directory(const fs::path &app_dir)
+HookRepair repair_hook_directory(const fs::path &app_dir, const fs::path &hook_dir)
 {
 	HookRepairState state;
 
 	/* unattempted, so the publishing half runs the securing one itself */
-	return publish_hook_payload(app_dir, state);
+	return publish_hook_payload(app_dir, hook_dir, state);
 }
 
 void report_hook_repair(HookRepair result)

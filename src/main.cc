@@ -1017,8 +1017,8 @@ void callbacks_impl::run_hook_repair_ui()
 
 	hook_repair_ran = true;
 
-	if (secure_hook_directory(state) == HookSecure::Blocked) {
-		std::vector<blocker_info> blockers = get_hook_dir_blockers();
+	if (secure_hook_directory(params.hook_dir, state) == HookSecure::Blocked) {
+		std::vector<blocker_info> blockers = get_hook_dir_blockers(params.hook_dir);
 		log_blockers("Hook directory is held open by", blockers);
 
 		if (!blockers.empty() && params.interactive && params.hook_prompt) {
@@ -1043,10 +1043,10 @@ void callbacks_impl::run_hook_repair_ui()
 
 				pump_messages_for(frame, 1000);
 
-				if (secure_hook_directory(state) != HookSecure::Blocked)
+				if (secure_hook_directory(params.hook_dir, state) != HookSecure::Blocked)
 					break;
 
-				blockers = get_hook_dir_blockers();
+				blockers = get_hook_dir_blockers(params.hook_dir);
 			}
 
 			blocker_wait_complete();
@@ -1054,7 +1054,7 @@ void callbacks_impl::run_hook_repair_ui()
 		}
 	}
 
-	report_hook_repair(publish_hook_payload(params.app_dir, state));
+	report_hook_repair(publish_hook_payload(params.app_dir, params.hook_dir, state));
 }
 
 void callbacks_impl::disk_space_check_start()
@@ -1922,7 +1922,7 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	 * the updater, so it still has to run - just with nothing to show it
 	 * in, and nobody to ask about a process holding the directory open. */
 	if (!cb_impl.hook_repair_ran)
-		report_hook_repair(repair_hook_directory(params.app_dir));
+		report_hook_repair(repair_hook_directory(params.app_dir, params.hook_dir));
 
 	/* Don't attempt start if application failed to update */
 	if (cb_impl.should_start || params.restart_on_fail || !cb_impl.finished_downloading) {

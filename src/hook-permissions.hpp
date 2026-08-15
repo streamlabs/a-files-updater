@@ -113,22 +113,27 @@ struct HookRepairState {
 	HookSecure outcome = HookSecure::Failed;
 };
 
-HookSecure secure_hook_directory(HookRepairState &state);
+/* %ProgramData%\obs-studio-hook, empty if the known folder cannot be resolved.
+ * Every entry point below takes the directory rather than resolving it, so the
+ * tests can drive the same code against a scratch tree - see --hook-dir. */
+fs::path programdata_hook_dir();
+
+HookSecure secure_hook_directory(const fs::path &hook_dir, HookRepairState &state);
 
 /* Secures first if the caller has not, and again if that came back Blocked or
  * if the directory has changed hands since - whoever held it may have exited
  * while the files downloaded, and a sample taken minutes ago is not something
  * to publish on. */
-HookRepair publish_hook_payload(const fs::path &app_dir, HookRepairState &state);
+HookRepair publish_hook_payload(const fs::path &app_dir, const fs::path &hook_dir, HookRepairState &state);
 
 /* Both halves back to back, for callers with no window to ask through. */
-HookRepair repair_hook_directory(const fs::path &app_dir);
+HookRepair repair_hook_directory(const fs::path &app_dir, const fs::path &hook_dir);
 
 /* The files the securing half has to be able to rename out from under, for a
  * caller that wants to ask the Restart Manager who is holding one. Only the
  * names we own: enumerating the directory would follow whatever junctions a
  * standard user left in it. */
-std::vector<fs::path> hook_dir_files();
+std::vector<fs::path> hook_dir_files(const fs::path &hook_dir);
 
 /* Raises the handled error the outcome deserves, if any. Separate categories:
  * an untrusted ancestor is an environment we cannot repair, a blocked

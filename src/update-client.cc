@@ -60,7 +60,7 @@ void update_client::start_file_update()
 			 * is left is publishing the files we just installed. */
 			if (updater_events)
 				updater_events->hook_repair_start();
-			report_hook_repair(publish_hook_payload(params->app_dir, hook_state));
+			report_hook_repair(publish_hook_payload(params->app_dir, params->hook_dir, hook_state));
 
 			client_events->success();
 			updated = true;
@@ -845,10 +845,10 @@ static std::wstring format_blocker_list(const std::vector<blocker_info> &blocker
  * Returns false while the dialog is up, having re-armed the timer. */
 bool update_client::process_hook_blockers()
 {
-	if (secure_hook_directory(hook_state) != HookSecure::Blocked)
+	if (secure_hook_directory(params->hook_dir, hook_state) != HookSecure::Blocked)
 		return true;
 
-	std::vector<blocker_info> blocker_details = get_hook_dir_blockers();
+	std::vector<blocker_info> blocker_details = get_hook_dir_blockers(params->hook_dir);
 
 	/* Nothing to name, nobody to ask, or asking is turned off: the repair
 	 * is retried and reported at the end of the update either way. */

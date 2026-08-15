@@ -8,6 +8,7 @@ const generate_files = require('./generate_files.js');
 const updater_server = require('./updater_server.js');
 const reporter_server = require('./error_receive_server.js');
 const updater_launcher = require('./updater_launcher.js');
+const hook_dir = require('./hook_dir.js');
 
 exports.test_update = async function (testinfo) {
   if (testinfo.more_log_output)
@@ -33,12 +34,18 @@ exports.test_update = async function (testinfo) {
     return 0;
   }
 
+  if (!hook_dir.prepare(testinfo)) {
+    updater_server.stop_https_update_server();
+    reporter_server.stop_crash_report_server();
+    return 1;
+  }
+
   if (testinfo.more_log_output)
     console.log("--- Ready to start updater.");
   try {
     let launched = await updater_launcher.start_updater(testinfo)
     let ret = 0;
-    if (testinfo.expectedResult == "filescorrupted") { 
+    if (testinfo.expectedResult == "filescorrupted") {
       console.log("=== Test " + testinfo.number + " result: after updater files corrupted as expected");
     } else if (!generate_files.check_results(testinfo)) {
       ret = 1;
@@ -52,11 +59,17 @@ exports.test_update = async function (testinfo) {
       }
     }
 
+    if (!hook_dir.check(testinfo)) {
+      ret = 1;
+      console.log("=== Test " + testinfo.number + " result: hook directory not as expected");
+    }
+
     if (testinfo.serverStarted) {
       updater_server.stop_https_update_server();
       reporter_server.stop_crash_report_server();
     }
 
+    hook_dir.cleanup(testinfo);
     generate_files.clean_after_test(testinfo, false);
 
     return ret
@@ -65,6 +78,7 @@ exports.test_update = async function (testinfo) {
   catch (error) {
     updater_server.stop_https_update_server();
     reporter_server.stop_crash_report_server();
+    hook_dir.cleanup(testinfo);
     //catch exception what was not catched by promises 
     console.log('SPAWN: error spawning catch. Error : ' + error);
     return 1

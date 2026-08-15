@@ -54,13 +54,20 @@ exports.gettestinfo = function (testname) {
     reporterHost: "localhost",
     reporterPort: 80,
 
-    //how to run updater 
+    //how to run updater
     skipUpdaterLaunch: false,
     runAsInteractive: '0',
 
-    //test results 
+    //graphics hook directory, repaired against a scratch copy - needs elevation
+    hookDirTest: false,
+    hookDirBlocked: false, // hold graphics-hook64.dll open, so the repair cannot replace the directory
+    hookPrompt: undefined, // '0' to withdraw the ask without withdrawing the repair
+
+    //test results
     expectedResult: "filesupdated", // "filesnotchanged", "", "filescorrupted"
     expectedCrashReport: false,
+    expectedHookReport: undefined, // "", "HookQuarantineBlocked", "HookDirAncestorUntrusted"
+    expectedHookDirSecured: undefined, // true once BUILTIN\Users can no longer write to it
 
     register_unnecesary_request: false,
 
