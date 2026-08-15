@@ -4,7 +4,7 @@ const test_config = require('./test_config.js');
 const fse = require('fs-extra')
 const path = require('path');
 
-const run_one_test = true;
+const run_one_test = false;
 
 async function run_tests() {
     let testinfo;

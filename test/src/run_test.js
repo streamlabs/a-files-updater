@@ -37,6 +37,7 @@ exports.test_update = async function (testinfo) {
   if (!hook_dir.prepare(testinfo)) {
     updater_server.stop_https_update_server();
     reporter_server.stop_crash_report_server();
+    hook_dir.cleanup(testinfo);
     return 1;
   }
 

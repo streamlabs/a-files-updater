@@ -49,8 +49,10 @@ function make_untrusted(dir) {
   return run(`takeown /f "${dir}" /d Y`) && run(`icacls "${dir}" /grant *S-1-5-32-545:(OI)(CI)F`);
 }
 
+/* A real synchronous sleep: ping to loopback replies immediately, so -w never
+ * has anything to wait out. */
 function sleep_ms(ms) {
-  cp.execSync(`ping -n 1 -w ${ms} 127.0.0.1`, { stdio: 'ignore', shell: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /* Windows denies write access to a mapped image, so the open failing is the
@@ -204,17 +206,22 @@ exports.check = function (testinfo) {
   }
 
   if (testinfo.expectedHookDirSecured !== undefined) {
-    let acl = '';
+    let acl = null;
     try {
       acl = cp.execSync(`icacls "${exports.hook_dir}"`).toString();
     } catch (e) {}
 
-    /* the grant the repair exists to remove */
-    const still_loose = acl.indexOf('BUILTIN\\Users:(OI)(CI)(F)') !== -1;
-
-    if (still_loose === testinfo.expectedHookDirSecured) {
-      console.log('Hook directory permissions not as expected:\n' + acl);
+    if (acl === null) {
+      console.log('Could not read the ACL of ' + exports.hook_dir);
       ok = false;
+    } else {
+      /* the grant the repair exists to remove */
+      const still_loose = acl.indexOf('BUILTIN\\Users:(OI)(CI)(F)') !== -1;
+
+      if (still_loose === testinfo.expectedHookDirSecured) {
+        console.log('Hook directory permissions not as expected:\n' + acl);
+        ok = false;
+      }
     }
   }
 

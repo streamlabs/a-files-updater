@@ -5,6 +5,7 @@
 #include "hook-permissions.hpp"
 #include "logger/log.h"
 #include <clocale>
+#include <cwctype>
 #include "utils.hpp"
 
 /* Filesystem is implicitly included from cli-parser.h */
@@ -114,6 +115,23 @@ static fs::path fetch_path(const char *str, size_t length)
 	log_debug("Result of fetch path: %s", result.u8string().c_str());
 
 	return result;
+}
+
+static std::wstring lowered(std::wstring text)
+{
+	for (wchar_t &c : text)
+		c = towlower(c);
+
+	return text;
+}
+
+/* True when `path` is `root` or sits below it, compared without case because
+ * Windows paths are. */
+static bool is_inside(const fs::path &path, const fs::path &root)
+{
+	const std::wstring prefix = lowered(root.wstring()) + L"\\";
+
+	return lowered(path.wstring()).rfind(prefix, 0) == 0;
 }
 
 static fs::path fetch_default_temp_dir()
@@ -325,16 +343,30 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	/* Only the tests pass this, and everything it points at gets renamed,
 	 * scheduled for deletion at the next reboot, and replaced by a
 	 * directory owned by Administrators - by a process running elevated,
-	 * from a command line composed by one that is not. So it is held to the
-	 * shape of the thing it stands in for: the real leaf name, somewhere a
-	 * test can write, and never a drive root or a system directory. */
+	 * from a command line composed by one that is not. So it is resolved
+	 * before it is judged, since ".." and a junction both spell a path that
+	 * is not the one it looks like, and held to the shape of the thing it
+	 * stands in for: the real leaf name, under the tests' own scratch root
+	 * rather than anywhere the argument happens to point. The scratch root
+	 * is read back through the same known-folder lookup programdata_hook_dir
+	 * uses, not the %ProgramData% environment variable, which the same
+	 * unelevated command line could have set to anything. */
 	if (hook_dir_arg->count > 0) {
-		const fs::path candidate = fetch_path(hook_dir_arg->sval[0], strlen(hook_dir_arg->sval[0]));
-		const bool named_right = candidate.filename() == L"obs-studio-hook";
-		const bool below_root = candidate.has_relative_path() && candidate.parent_path().has_relative_path();
+		std::error_code hook_ec;
+		const fs::path requested = fetch_path(hook_dir_arg->sval[0], strlen(hook_dir_arg->sval[0]));
+		const fs::path candidate = fs::weakly_canonical(requested, hook_ec).make_preferred();
+		const fs::path program_data = programdata_hook_dir().parent_path();
+		const fs::path scratch_root = program_data / L"slobs-hook-tests";
 
-		if (!named_right || !below_root || is_system_folder(candidate) || is_system_folder(candidate.parent_path())) {
-			log_fatal("Refusing --hook-dir %s: it must be an obs-studio-hook directory below a non-system one", candidate.u8string().c_str());
+		const bool resolvable = !hook_ec && !program_data.empty();
+		const bool named_right = resolvable && candidate.filename() == L"obs-studio-hook";
+		const bool below_root = resolvable && candidate.has_relative_path() && candidate.parent_path().has_relative_path();
+		const bool in_scratch_tree = resolvable && is_inside(candidate, scratch_root);
+
+		if (!resolvable || !named_right || !below_root || !in_scratch_tree || is_system_folder(candidate) ||
+		    is_system_folder(candidate.parent_path())) {
+			log_fatal("Refusing --hook-dir %s: it must be an obs-studio-hook directory under %%ProgramData%%\\slobs-hook-tests",
+				  candidate.u8string().c_str());
 			success = false;
 		} else {
 			params->hook_dir = candidate;
