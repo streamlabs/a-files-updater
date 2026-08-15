@@ -350,7 +350,17 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	 * rather than anywhere the argument happens to point. The scratch root
 	 * is read back through the same known-folder lookup programdata_hook_dir
 	 * uses, not the %ProgramData% environment variable, which the same
-	 * unelevated command line could have set to anything. */
+	 * unelevated command line could have set to anything.
+	 *
+	 * Resolving early only catches a path dressed up to look like another
+	 * one; it says nothing about a component swapped out after this check
+	 * runs and before the elevated process acts on the string. Closing that
+	 * needs the same guarantee the shared directory's own ancestors get:
+	 * chain_trust demands every directory above the leaf is one only
+	 * Administrators can rename or replace, which an unelevated caller who
+	 * owns something under the scratch tree cannot arrange. Unlike the real
+	 * hook directory, refusing costs nothing here, so an untrusted ancestor
+	 * fails the argument outright rather than being reported and left. */
 	if (hook_dir_arg->count > 0) {
 		std::error_code hook_ec;
 		const fs::path requested = fetch_path(hook_dir_arg->sval[0], strlen(hook_dir_arg->sval[0]));
@@ -362,10 +372,12 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		const bool named_right = resolvable && candidate.filename() == L"obs-studio-hook";
 		const bool below_root = resolvable && candidate.has_relative_path() && candidate.parent_path().has_relative_path();
 		const bool in_scratch_tree = resolvable && is_inside(candidate, scratch_root);
+		const bool ancestors_trusted = resolvable && chain_trust(candidate).ancestors;
 
-		if (!resolvable || !named_right || !below_root || !in_scratch_tree || is_system_folder(candidate) ||
+		if (!resolvable || !named_right || !below_root || !in_scratch_tree || !ancestors_trusted || is_system_folder(candidate) ||
 		    is_system_folder(candidate.parent_path())) {
-			log_fatal("Refusing --hook-dir %s: it must be an obs-studio-hook directory under %%ProgramData%%\\slobs-hook-tests",
+			log_fatal("Refusing --hook-dir %s: it must be an obs-studio-hook directory under %%ProgramData%%\\slobs-hook-tests, reached only "
+				  "through directories Administrators own",
 				  candidate.u8string().c_str());
 			success = false;
 		} else {

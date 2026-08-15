@@ -196,21 +196,13 @@ bool file_is_trusted(const wchar_t *lead, const fs::path &path)
 	return false;
 }
 
-/* The object and the path to it are answered separately, because only the
- * object is acted on: it is the one that says who wrote what is there, and the
- * one an elevated writer can repair. An untrusted ancestor is reported and
- * nothing else - see the header.
- *
- * Deliberately no bool that folds the two back together. One of those is what
- * had the repair quarantining a sound directory over a drive root. */
-struct TrustReport {
-	bool object = false;
-	bool ancestors = false;
-	std::wstring object_why;
-	fs::path ancestor; /* the component ancestor_why describes */
-	std::wstring ancestor_why;
-};
+} // namespace
 
+/* Defined here, outside the anonymous namespace above and the one resumed
+ * below, because hook-permissions.hpp declares it: --hook-dir needs the same
+ * chain-trust guarantee this file already applies to the payload directory,
+ * before an elevated process ever acts on the argument's path string - see
+ * cli-parser.cc. */
 TrustReport chain_trust(const fs::path &path)
 {
 	TrustReport report;
@@ -234,6 +226,8 @@ TrustReport chain_trust(const fs::path &path)
 
 	return report;
 }
+
+namespace {
 
 uint64_t file_version(const fs::path &path)
 {

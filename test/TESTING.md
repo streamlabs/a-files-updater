@@ -75,7 +75,10 @@ check - and asserts the repair still goes through.
 ### Flow level: the integration pack
 
 Two scenarios in `run_tests.js` run the whole updater against a scratch hook
-directory, passed with `--hook-dir` so the machine's real one is never touched:
+directory, passed with `--hook-dir` so the machine's real one is never touched.
+`--hook-dir` refuses an override reached through anything but Administrators,
+so `hook_dir.js` locks down the scratch tree's ancestors before the updater
+ever sees the path - only the leaf itself is left the way each scenario needs it:
 
 * `hookDirTest` - the directory is left owned by the current user and writable
   by `BUILTIN\Users`; the updater should quarantine it, harden it, and report

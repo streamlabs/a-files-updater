@@ -60,7 +60,7 @@ exports.test_update = async function (testinfo) {
       }
     }
 
-    if (!hook_dir.check(testinfo)) {
+    if (!(await hook_dir.check(testinfo))) {
       ret = 1;
       console.log("=== Test " + testinfo.number + " result: hook directory not as expected");
     }

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -99,6 +100,28 @@ enum class HookSecure {
 	Blocked,
 	Failed,
 };
+
+/* The object and the path to it are answered separately, because only the
+ * object is acted on: it is the one that says who wrote what is there, and the
+ * one an elevated writer can repair. An untrusted ancestor is reported and
+ * nothing else - see above.
+ *
+ * Deliberately no bool that folds the two back together. One of those is what
+ * had the repair quarantining a sound directory over a drive root. */
+struct TrustReport {
+	bool object = false;
+	bool ancestors = false;
+	std::wstring object_why;
+	fs::path ancestor; /* the component ancestor_why describes */
+	std::wstring ancestor_why;
+};
+
+/* Walks every directory from `path`'s parent to the drive root, refusing a
+ * reparse point or a write grant to anyone outside SYSTEM/Administrators/
+ * TrustedInstaller at any of them. Exported because --hook-dir needs the same
+ * guarantee before an elevated process ever acts on the argument's path
+ * string - see cli-parser.cc. */
+TrustReport chain_trust(const fs::path &path);
 
 constexpr size_t kHookPairCount = 2;
 

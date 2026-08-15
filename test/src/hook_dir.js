@@ -5,8 +5,8 @@
  * real %ProgramData%\obs-studio-hook that this machine's OBS-derived apps
  * inject from. It still lives under %ProgramData%, because the trust check
  * walks every ancestor to the drive root: a directory under the repo or under
- * %TEMP% is reached through a user-owned one, and every run would come back
- * AncestorUntrusted no matter what the repair did.
+ * %TEMP% is reached through a user-owned one, and --hook-dir would refuse the
+ * argument outright rather than letting the updater run against it.
  *
  * Needs an elevated terminal, for the same reason the repair does. Without one
  * the setup is skipped and the test says so rather than quietly passing.
@@ -47,6 +47,15 @@ function run(command) {
  * in place. */
 function make_untrusted(dir) {
   return run(`takeown /f "${dir}" /d Y`) && run(`icacls "${dir}" /grant *S-1-5-32-545:(OI)(CI)F`);
+}
+
+/* mkdirpSync leaves every directory it creates owned by whoever is running
+ * this elevated terminal, not BUILTIN\Administrators, and --hook-dir now
+ * refuses an override reached through anything but Administrators. Retaken
+ * and locked down the same way the shared hook directory itself is, so the
+ * chain the parser demands is the chain this tree actually has. */
+function harden_ancestor(dir) {
+  return run(`takeown /f "${dir}" /a /d Y`) && run(`icacls "${dir}" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F`);
 }
 
 /* A real synchronous sleep: ping to loopback replies immediately, so -w never
@@ -118,6 +127,9 @@ exports.prepare = function (testinfo) {
   exports.cleanup(testinfo);
   fse.mkdirpSync(exports.hook_dir);
 
+  if (!harden_ancestor(path.dirname(scratch_root)) || !harden_ancestor(scratch_root))
+    return false;
+
   if (!make_untrusted(exports.hook_dir))
     return false;
 
@@ -150,13 +162,20 @@ exports.cleanup = function (testinfo) {
   console.log('Could not remove ' + scratch_root);
 };
 
+function delay_ms(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /* Three outcomes, deliberately distinct: no report was sent at all, one was
  * sent and names a category, or one was sent and could not be read. Folding
  * the third into the first would let a malformed report pass as silence.
  *
  * The emulator answers the POST before it finishes writing the file, so both
- * "is it there" and "is it complete" are waited for rather than sampled once. */
-function reported_category(testinfo, expect_report) {
+ * "is it there" and "is it complete" are waited for rather than sampled once.
+ * That write happens on this same process's event loop, in
+ * error_receive_server.js, so the wait has to yield to it rather than block
+ * it - a blocking sleep here would starve the very write it is waiting on. */
+async function reported_category(testinfo, expect_report) {
   const report_path = path.join(testinfo.reporterDir, 'crash_report.json');
   const deadline = Date.now() + (expect_report ? 5000 : 1000);
   let last_error = null;
@@ -178,7 +197,7 @@ function reported_category(testinfo, expect_report) {
       /* nothing to wait for, but give a late write a moment to appear */
     }
 
-    sleep_ms(200);
+    await delay_ms(200);
   } while (Date.now() < deadline);
 
   if (last_error) {
@@ -189,14 +208,14 @@ function reported_category(testinfo, expect_report) {
   return '';
 }
 
-exports.check = function (testinfo) {
+exports.check = async function (testinfo) {
   if (!testinfo.hookDirTest)
     return true;
 
   let ok = true;
 
   if (testinfo.expectedHookReport !== undefined) {
-    const category = reported_category(testinfo, testinfo.expectedHookReport !== '');
+    const category = await reported_category(testinfo, testinfo.expectedHookReport !== '');
 
     if (category !== testinfo.expectedHookReport) {
       const wanted = testinfo.expectedHookReport === '' ? 'no report' : `"${testinfo.expectedHookReport}"`;
