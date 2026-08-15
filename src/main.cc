@@ -910,6 +910,12 @@ void callbacks_impl::blocker_start(blocker_kind kind)
 	ShowWindow(kill_button, kind == blocker_kind::hook ? SW_HIDE : SW_SHOW);
 	ShowWindow(cancel_button, SW_SHOW);
 
+	/* Whatever dialog came before disabled these on the way out, and hiding
+	 * them did not put that back. Without this the panel comes up with a
+	 * Skip nobody can click. */
+	EnableWindow(kill_button, TRUE);
+	EnableWindow(cancel_button, TRUE);
+
 	if (kind == blocker_kind::hook) {
 		std::wstring skip_label = ConvertToUtf16WS(boost::locale::translate("Skip"));
 		{
