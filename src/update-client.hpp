@@ -81,8 +81,14 @@ struct pid_callbacks {
  * blocker_start -> blocker_waiting_for -> blocker_wait_complete
  */
 
+/* What the blockers are holding, which decides the wording and the buttons.
+ * Hook is the only one the user may decline: the update does not need the
+ * graphics hook directory, so a process holding it is a reason to ask rather
+ * than a reason to stop. */
+enum class blocker_kind { generic, virtualcam, hook };
+
 struct blocker_callbacks {
-	virtual void blocker_start(bool is_virtualcam_phase) = 0;
+	virtual void blocker_start(blocker_kind kind) = 0;
 	virtual int blocker_waiting_for(const std::vector<blocker_info> &blockers, bool list_changed) = 0;
 	virtual void blocker_wait_complete() = 0;
 };

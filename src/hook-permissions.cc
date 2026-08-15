@@ -35,6 +35,8 @@ const HookPair kHookPairs[] = {
 	{L"graphics-hook64.dll", L"obs-vulkan64.json"},
 };
 
+static_assert(std::size(kHookPairs) == kHookPairCount, "HookRepairState carries one flag per pair");
+
 const wchar_t *const kTrustedSids[] = {
 	L"S-1-5-18",                                                       /* LOCAL SYSTEM */
 	kAdministratorsSid,                                                /* BUILTIN\Administrators */
@@ -300,16 +302,28 @@ fs::path quarantine_name(const fs::path &dir)
 	return name;
 }
 
-bool quarantine_hook_dir(const fs::path &dir)
+enum class Quarantine { Moved, Blocked, Failed };
+
+Quarantine quarantine_hook_dir(const fs::path &dir)
 {
 	/* random, and tried once - see the header */
 	const fs::path aside = quarantine_name(dir);
 	if (aside.empty())
-		return false;
+		return Quarantine::Failed;
 
 	if (!MoveFileExW(dir.c_str(), aside.c_str(), 0)) {
-		wlog_warn(L"Could not move %s aside: %lu", dir.c_str(), GetLastError());
-		return false;
+		const DWORD error = GetLastError();
+
+		wlog_warn(L"Could not move %s aside: %lu", dir.c_str(), error);
+
+		/* Renaming a directory takes down every handle open beneath it,
+		 * so one held without FILE_SHARE_DELETE refuses it - the hook
+		 * DLL stays mapped for the life of every process it was
+		 * injected into. That one is the caller's to ask about. */
+		if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION)
+			return Quarantine::Blocked;
+
+		return Quarantine::Failed;
 	}
 
 	/* A junction survives the rename, and a child path below one resolves
@@ -332,7 +346,7 @@ bool quarantine_hook_dir(const fs::path &dir)
 	MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
 
 	wlog_info(L"Moved the untrusted hook directory to %s; it goes away on the next reboot", aside.c_str());
-	return true;
+	return Quarantine::Moved;
 }
 
 bool create_hook_dir(const fs::path &dir)
@@ -564,12 +578,33 @@ void publish_hooks(const fs::path &dir, const fs::path &source, const bool *pair
 
 } // namespace
 
-HookRepair repair_hook_directory(const fs::path &app_dir)
+std::vector<fs::path> hook_dir_files()
 {
 	const fs::path dir = programdata_hook_dir();
+	std::vector<fs::path> files;
+
+	if (dir.empty())
+		return files;
+
+	for (const HookPair &pair : kHookPairs) {
+		files.push_back(dir / pair.dll);
+		files.push_back(dir / pair.manifest);
+	}
+
+	return files;
+}
+
+HookSecure secure_hook_directory(HookRepairState &state)
+{
+	state = {};
+	state.attempted = true;
+
+	state.dir = programdata_hook_dir();
+	const fs::path dir = state.dir;
+
 	if (dir.empty()) {
 		log_warn("Could not resolve the hook directory, skipping permission repair");
-		return HookRepair::Failed;
+		return state.outcome;
 	}
 
 	/* non-fatal; logged only because it explains a later ownership failure */
@@ -589,7 +624,6 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 	 * would report the descriptor we just applied rather than the one that
 	 * earned the deletion */
 	std::wstring file_why[std::size(kHookPairs)][2];
-	bool pair_was_trusted[std::size(kHookPairs)] = {};
 
 	/* Nothing an elevated writer can repair, and no reason to distrust the
 	 * hooks: whoever wrote them is a separate question from whether the way
@@ -608,7 +642,7 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 				file_why[i][j] = L"sat in a directory that was not ours";
 		}
 
-		pair_was_trusted[i] = file_was_trusted[i][0] && file_was_trusted[i][1];
+		state.pair_was_trusted[i] = file_was_trusted[i][0] && file_was_trusted[i][1];
 	}
 
 	/* unlink a junction rather than working through it to its target */
@@ -619,22 +653,26 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
 			remove_vulkan_layer_registry();
-			return HookRepair::Failed;
+			return state.outcome;
 		}
 	}
 
 	if (!dir_was_trusted && fs::exists(dir, ec)) {
 		wlog_warn(L"Hook directory %s %s; replacing it", dir.c_str(), before.object_why.c_str());
 
-		if (!quarantine_hook_dir(dir)) {
+		const Quarantine moved = quarantine_hook_dir(dir);
+
+		if (moved != Quarantine::Moved) {
 			remove_vulkan_layer_registry();
-			return HookRepair::Failed;
+			if (moved == Quarantine::Blocked)
+				state.outcome = HookSecure::Blocked;
+			return state.outcome;
 		}
 	}
 
 	if ((!dir_was_trusted && !create_hook_dir(dir)) || !apply_hook_dir_security(dir)) {
 		remove_vulkan_layer_registry();
-		return HookRepair::Failed;
+		return state.outcome;
 	}
 
 	/* Permissions are settled; nothing below here may abort the repair. */
@@ -657,9 +695,42 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 		}
 	}
 
+	state.outcome = HookSecure::Secured;
+	return state.outcome;
+}
+
+HookRepair publish_hook_payload(const fs::path &app_dir, HookRepairState &state)
+{
+	std::wstring drift_why;
+
+	/* The securing half ran before the download, which was minutes ago. Ask
+	 * the directory again rather than trusting that sample: publishing into
+	 * one that changed hands since would hand our payload to whoever took
+	 * it, labelled administrator-installed by the ACL reset that follows
+	 * every file we write. */
+	const bool drifted = state.attempted && state.outcome == HookSecure::Secured && !object_is_trusted(state.dir, kWriteAccess, &drift_why);
+
+	if (drifted)
+		wlog_warn(L"Hook directory %s %s since it was secured; securing it again", state.dir.c_str(), drift_why.c_str());
+
+	if (drifted || !state.attempted || state.outcome == HookSecure::Blocked)
+		secure_hook_directory(state);
+
+	switch (state.outcome) {
+	case HookSecure::Secured:
+		break;
+	case HookSecure::Blocked:
+		/* still not ours, so nothing goes in it */
+		return HookRepair::QuarantineBlocked;
+	case HookSecure::Failed:
+		return HookRepair::Failed;
+	}
+
+	const fs::path dir = state.dir;
+
 	const fs::path source = trusted_hook_payload(app_dir);
 	if (!source.empty())
-		publish_hooks(dir, source, pair_was_trusted);
+		publish_hooks(dir, source, state.pair_was_trusted.data());
 
 	const TrustReport after = chain_trust(dir);
 	bool hooks_trusted = true;
@@ -699,6 +770,14 @@ HookRepair repair_hook_directory(const fs::path &app_dir)
 	return HookRepair::Secured;
 }
 
+HookRepair repair_hook_directory(const fs::path &app_dir)
+{
+	HookRepairState state;
+
+	/* unattempted, so the publishing half runs the securing one itself */
+	return publish_hook_payload(app_dir, state);
+}
+
 void report_hook_repair(HookRepair result)
 {
 	switch (result) {
@@ -709,6 +788,11 @@ void report_hook_repair(HookRepair result)
 		 * unreadable descriptor lands here too, and the log has the
 		 * one that did */
 		report_handled_error("HookDirAncestorUntrusted", "A directory above the graphics hook directory could not be trusted");
+		break;
+	case HookRepair::QuarantineBlocked:
+		/* the log names whoever was holding it, when the Restart
+		 * Manager could tell us */
+		report_handled_error("HookQuarantineBlocked", "A process is holding the graphics hook directory open");
 		break;
 	case HookRepair::Failed:
 		report_handled_error("HookRepairFailure", "Could not secure the graphics hook directory");

@@ -1,4 +1,5 @@
 #include "update-blockers.hpp"
+#include "hook-permissions.hpp"
 #include "logger/log.h"
 
 #include <algorithm>
@@ -288,6 +289,34 @@ std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers)
 	}
 
 	return result;
+}
+
+std::vector<blocker_info> get_hook_dir_blockers()
+{
+	blockers_map_t blockers;
+	std::error_code ec;
+
+	/* The Restart Manager registers files, so a process holding only a
+	 * handle on the directory itself does not show up here. */
+	for (fs::path file : hook_dir_files()) {
+		if (!fs::exists(file, ec))
+			continue;
+
+		get_blockers_list(file, blockers);
+	}
+
+	return get_blocker_details(blockers);
+}
+
+void log_blockers(const char *lead, const std::vector<blocker_info> &blockers)
+{
+	if (blockers.empty()) {
+		log_info("%s: no holder identified", lead);
+		return;
+	}
+
+	for (const blocker_info &info : blockers)
+		wlog_info(L"%S: %s (%lu) %s", lead, info.app_name.c_str(), info.pid, info.exe_path.c_str());
 }
 
 bool check_file_updatable(fs::path &check_path, bool check_read, blockers_map_t &blockers)
