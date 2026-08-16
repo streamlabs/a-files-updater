@@ -22,7 +22,7 @@ constexpr auto kAbandonedRunAge = std::chrono::hours(24);
 constexpr auto kRecoveryRunAge = std::chrono::hours(24 * 7);
 
 enum class PrepareResult { Ready, Collision, Failed };
-enum class RunActivity { Inactive, Active, Unknown };
+enum class ClaimResult { Claimed, Active, Gone, Failed };
 
 void set_failure(UpdaterStorageDiagnostics *diagnostics, const std::wstring &reason, const std::string &category = "UpdaterStorageFailure")
 {
@@ -213,6 +213,19 @@ bool run_leaf(const fs::path &path)
 	return true;
 }
 
+bool prune_leaf(const fs::path &path)
+{
+	const std::wstring name = path.filename().wstring();
+	if (name.size() != 39 || name.rfind(L".prune-", 0) != 0)
+		return false;
+
+	for (size_t i = 7; i < name.size(); i++) {
+		if (!iswxdigit(name[i]))
+			return false;
+	}
+	return true;
+}
+
 bool quarantine_leaf(const fs::path &root, const fs::path &path)
 {
 	const std::wstring prefix = root.filename().wstring() + L".quarantine-";
@@ -299,34 +312,32 @@ bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostic
 	return false;
 }
 
-RunActivity run_activity(const fs::path &run, std::wstring &why)
+ClaimResult claim_updater_run(const fs::path &run, fs::path &claimed, std::wstring &why)
 {
-	const fs::path lock_path = run / kRunLockName;
-	HANDLE lock = CreateFileW(lock_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-				  FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-	if (lock == INVALID_HANDLE_VALUE) {
-		const DWORD error = GetLastError();
-		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
-			return RunActivity::Inactive;
-		if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION)
-			return RunActivity::Active;
-		why = L"Could not inspect updater run lock " + lock_path.wstring() + L": " + format_hex32(error);
-		return RunActivity::Unknown;
+	for (int attempt = 0; attempt < 8; attempt++) {
+		const std::wstring suffix = security_random_hex(4);
+		if (suffix.empty()) {
+			why = L"Could not name a claimed updater run: no randomness available";
+			return ClaimResult::Failed;
+		}
+
+		claimed = run.parent_path() / (L".prune-" + suffix);
+		if (MoveFileExW(run.c_str(), claimed.c_str(), 0))
+			return ClaimResult::Claimed;
+
+		const DWORD move_error = GetLastError();
+		if (move_error == ERROR_FILE_NOT_FOUND || move_error == ERROR_PATH_NOT_FOUND)
+			return ClaimResult::Gone;
+		if (move_error == ERROR_ACCESS_DENIED || move_error == ERROR_SHARING_VIOLATION || move_error == ERROR_LOCK_VIOLATION)
+			return ClaimResult::Active;
+		if (move_error != ERROR_ALREADY_EXISTS && move_error != ERROR_FILE_EXISTS) {
+			why = L"Could not rename claimed updater run " + run.wstring() + L": " + format_hex32(move_error);
+			return ClaimResult::Failed;
+		}
 	}
 
-	FILE_ATTRIBUTE_TAG_INFO tag = {};
-	const bool readable = GetFileInformationByHandleEx(lock, FileAttributeTagInfo, &tag, sizeof(tag)) != 0;
-	const DWORD error = readable ? ERROR_SUCCESS : GetLastError();
-	CloseHandle(lock);
-	if (!readable) {
-		why = L"Could not inspect updater run lock " + lock_path.wstring() + L": " + format_hex32(error);
-		return RunActivity::Unknown;
-	}
-	if ((tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
-		why = L"Refusing unexpected updater run lock " + lock_path.wstring();
-		return RunActivity::Unknown;
-	}
-	return RunActivity::Inactive;
+	why = L"Could not find a unique claimed updater run name";
+	return ClaimResult::Failed;
 }
 
 } // namespace
@@ -342,6 +353,10 @@ fs::path programdata_updater_root()
 
 bool prepare_updater_temp_dir(const fs::path &dir, bool allow_existing, UpdaterStorageDiagnostics *diagnostics)
 {
+	if (prune_leaf(dir)) {
+		set_failure(diagnostics, L"Refusing reserved updater prune directory " + dir.wstring());
+		return false;
+	}
 	return prepare_directory(dir, allow_existing, true, diagnostics) == PrepareResult::Ready;
 }
 
@@ -354,7 +369,8 @@ bool acquire_updater_run_lock(const fs::path &dir, void **lock_handle, UpdaterSt
 	*lock_handle = nullptr;
 
 	const fs::path lock_path = dir / kRunLockName;
-	/* Zero sharing is the liveness signal checked by run_activity(). */
+	/* Zero sharing makes the atomic stale-run rename fail while this updater is
+	 * active anywhere below the run directory. */
 	HANDLE lock = CreateFileW(lock_path.c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
 	if (lock == INVALID_HANDLE_VALUE) {
 		set_failure(diagnostics, L"Could not acquire updater run lock " + lock_path.wstring() + L": " + format_hex32(GetLastError()));
@@ -432,18 +448,26 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 	std::error_code iteration_error;
 	const auto now = fs::file_time_type::clock::now();
 	std::vector<fs::path> stale_runs;
+	std::vector<fs::path> claimed_runs;
 	for (const fs::directory_entry &entry : fs::directory_iterator(root, fs::directory_options::skip_permission_denied, iteration_error)) {
 		std::error_code type_error;
 		if (!entry.is_directory(type_error) || type_error)
 			continue;
 		type_error.clear();
-		if (entry.is_symlink(type_error) || type_error || !run_leaf(entry.path()))
+		if (entry.is_symlink(type_error) || type_error)
+			continue;
+		const bool previously_claimed = prune_leaf(entry.path());
+		if (!previously_claimed && !run_leaf(entry.path()))
 			continue;
 
 		UpdaterStorageDiagnostics validation;
 		if (!trusted_directory(entry.path(), enforce_ancestors, &validation)) {
 			if (diagnostics && diagnostics->cleanup_warning.empty())
 				diagnostics->cleanup_warning = validation.failure;
+			continue;
+		}
+		if (previously_claimed) {
+			claimed_runs.push_back(entry.path());
 			continue;
 		}
 
@@ -461,19 +485,6 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 		if (now - modified < retention)
 			continue;
 
-		std::wstring activity_why;
-		const RunActivity activity = run_activity(entry.path(), activity_why);
-		if (activity == RunActivity::Active) {
-			wlog_info(L"Keeping active updater run %s", entry.path().c_str());
-			continue;
-		}
-		if (activity == RunActivity::Unknown) {
-			if (diagnostics && diagnostics->cleanup_warning.empty())
-				diagnostics->cleanup_warning = activity_why;
-			wlog_warn(L"%s", activity_why.c_str());
-			continue;
-		}
-
 		stale_runs.push_back(entry.path());
 	}
 	if (iteration_error && diagnostics && diagnostics->cleanup_warning.empty()) {
@@ -481,9 +492,34 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 		wlog_warn(L"%s", diagnostics->cleanup_warning.c_str());
 	}
 
-	for (const fs::path &run : stale_runs) {
+	for (const fs::path &run : claimed_runs) {
 		UpdaterStorageDiagnostics cleanup;
 		if (cleanup_updater_temp_dir(run, enforce_ancestors, &cleanup)) {
+			wlog_info(L"Pruned previously claimed updater run %s", run.c_str());
+		} else if (diagnostics && diagnostics->cleanup_warning.empty()) {
+			diagnostics->cleanup_warning = cleanup.failure;
+		}
+	}
+
+	for (const fs::path &run : stale_runs) {
+		fs::path claimed;
+		std::wstring claim_why;
+		const ClaimResult claim = claim_updater_run(run, claimed, claim_why);
+		if (claim == ClaimResult::Active) {
+			wlog_info(L"Keeping active updater run %s", run.c_str());
+			continue;
+		}
+		if (claim == ClaimResult::Gone)
+			continue;
+		if (claim == ClaimResult::Failed) {
+			if (diagnostics && diagnostics->cleanup_warning.empty())
+				diagnostics->cleanup_warning = claim_why;
+			wlog_warn(L"%s", claim_why.c_str());
+			continue;
+		}
+
+		UpdaterStorageDiagnostics cleanup;
+		if (cleanup_updater_temp_dir(claimed, enforce_ancestors, &cleanup)) {
 			wlog_info(L"Pruned abandoned updater run %s", run.c_str());
 		} else if (diagnostics && diagnostics->cleanup_warning.empty()) {
 			diagnostics->cleanup_warning = cleanup.failure;

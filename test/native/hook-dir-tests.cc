@@ -331,6 +331,15 @@ void updater_directory_rejects_non_normal_paths(const fs::path &scratch)
 	CHECK(!file_exists(c.root / L"run"));
 }
 
+void updater_directory_rejects_reserved_prune_names(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_reserved_prune_names");
+	const fs::path claimed = c.root / L".prune-00000000000000000000000000000001";
+
+	CHECK(!prepare_updater_temp_dir(claimed, false));
+	CHECK(!file_exists(claimed));
+}
+
 void updater_directory_rejects_a_reparse_point(const fs::path &scratch)
 {
 	Case c(scratch, "updater_directory_rejects_a_reparse_point");
@@ -479,22 +488,28 @@ void stale_updater_runs_are_pruned(const fs::path &scratch)
 	const fs::path abandoned = root / L"run-00000000000000000000000000000001";
 	const fs::path recovery = root / L"run-00000000000000000000000000000002";
 	const fs::path fresh = root / L"run-00000000000000000000000000000003";
+	const fs::path interrupted = root / L"run-00000000000000000000000000000004";
+	const fs::path claimed = root / L".prune-00000000000000000000000000000005";
 
 	CHECK(prepare_updater_temp_dir(root, false));
 	CHECK(prepare_updater_temp_dir(abandoned, false));
 	CHECK(prepare_updater_temp_dir(recovery, false));
 	CHECK(prepare_updater_temp_dir(fresh, false));
+	CHECK(prepare_updater_temp_dir(interrupted, false));
 
 	std::error_code ec;
 	fs::create_directories(abandoned / L"new-files", ec);
 	fs::create_directories(recovery / L"old-files", ec);
 	fs::last_write_time(abandoned, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
 	fs::last_write_time(recovery, fs::file_time_type::clock::now() - std::chrono::hours(24 * 8), ec);
+	fs::rename(interrupted, claimed, ec);
+	CHECK(!ec);
 
 	prune_updater_runs(root);
 	CHECK(!file_exists(abandoned));
 	CHECK(!file_exists(recovery));
 	CHECK(file_exists(fresh));
+	CHECK(!file_exists(claimed));
 }
 
 void updater_root_quarantine_sweep_is_non_recursive(const fs::path &scratch)
@@ -971,6 +986,7 @@ int wmain(int argc, wchar_t **argv)
 	updater_directory_needs_a_trusted_parent(scratch);
 	updater_directory_accepts_a_creation_only_parent(scratch);
 	updater_directory_rejects_non_normal_paths(scratch);
+	updater_directory_rejects_reserved_prune_names(scratch);
 	updater_directory_rejects_a_reparse_point(scratch);
 	updater_root_is_resolved_from_programdata(scratch);
 	untrusted_updater_root_is_replaced(scratch);
