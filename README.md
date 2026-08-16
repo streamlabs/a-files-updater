@@ -22,7 +22,7 @@
 - Supports both interactive and non-interactive (silent/automated) modes
 - Includes crash reporting (`crash-reporter.cc`) and an error state file for the parent app to inspect
 - DPI-aware — responds to `WM_DPICHANGED` and scales all UI elements accordingly
-- Removes the current updater run after normal completion, prunes abandoned payload runs after 24 hours, and retains failed-rollback originals for up to 7 days
+- Removes the current updater run after normal completion, prunes abandoned payload runs and root quarantines after 24 hours, and retains failed-rollback originals for up to 7 days
 
 # How to build
 As easy as: 

@@ -6,7 +6,6 @@
 #include <shlobj.h>
 
 #include <chrono>
-#include <cstdint>
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -20,15 +19,9 @@ namespace {
 const wchar_t *const kUpdaterDirSddl = L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 constexpr auto kAbandonedRunAge = std::chrono::hours(24);
 constexpr auto kRecoveryRunAge = std::chrono::hours(24 * 7);
+constexpr auto kQuarantineAge = std::chrono::hours(24);
 
 enum class PrepareResult { Ready, Collision, Failed };
-
-std::wstring hex32(uint32_t value)
-{
-	wchar_t buffer[11] = {};
-	swprintf_s(buffer, L"0x%08X", value);
-	return buffer;
-}
 
 void set_failure(UpdaterStorageDiagnostics *diagnostics, const std::wstring &reason, const std::string &category = "UpdaterStorageFailure")
 {
@@ -52,7 +45,7 @@ bool dacl_is_protected(const fs::path &dir, std::wstring &why)
 	PSECURITY_DESCRIPTOR descriptor = nullptr;
 	const DWORD read = GetNamedSecurityInfoW(dir.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, nullptr, &descriptor);
 	if (read != ERROR_SUCCESS) {
-		why = L"has an unreadable DACL control: " + hex32(read);
+		why = L"has an unreadable DACL control: " + format_hex32(read);
 		return false;
 	}
 
@@ -102,7 +95,7 @@ PrepareResult create_secure_directory(const fs::path &dir, bool enforce_ancestor
 {
 	SECURITY_ATTRIBUTES attributes = {sizeof(attributes), nullptr, false};
 	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(kUpdaterDirSddl, SDDL_REVISION_1, &attributes.lpSecurityDescriptor, nullptr)) {
-		set_failure(diagnostics, L"Failed to build updater directory descriptor: " + hex32(GetLastError()));
+		set_failure(diagnostics, L"Failed to build updater directory descriptor: " + format_hex32(GetLastError()));
 		return PrepareResult::Failed;
 	}
 
@@ -113,7 +106,7 @@ PrepareResult create_secure_directory(const fs::path &dir, bool enforce_ancestor
 	if (!created) {
 		if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)
 			return PrepareResult::Collision;
-		set_failure(diagnostics, L"Failed to create updater directory " + dir.wstring() + L": " + hex32(error));
+		set_failure(diagnostics, L"Failed to create updater directory " + dir.wstring() + L": " + format_hex32(error));
 		return PrepareResult::Failed;
 	}
 
@@ -154,7 +147,7 @@ PrepareResult prepare_directory(const fs::path &dir, bool allow_existing, bool e
 
 	const DWORD lookup_error = GetLastError();
 	if (lookup_error != ERROR_FILE_NOT_FOUND && lookup_error != ERROR_PATH_NOT_FOUND) {
-		set_failure(diagnostics, L"Could not inspect updater directory " + dir.wstring() + L": " + hex32(lookup_error));
+		set_failure(diagnostics, L"Could not inspect updater directory " + dir.wstring() + L": " + format_hex32(lookup_error));
 		return PrepareResult::Failed;
 	}
 
@@ -184,6 +177,33 @@ bool run_leaf(const fs::path &path)
 	return true;
 }
 
+bool quarantine_leaf(const fs::path &root, const fs::path &path)
+{
+	const std::wstring prefix = root.filename().wstring() + L".quarantine-";
+	const std::wstring name = path.filename().wstring();
+	if (name.size() != prefix.size() + 32 || name.rfind(prefix, 0) != 0)
+		return false;
+
+	for (size_t i = prefix.size(); i < name.size(); i++) {
+		if (!iswxdigit(name[i]))
+			return false;
+	}
+	return true;
+}
+
+bool remove_quarantine(const fs::path &aside, std::error_code *failure = nullptr)
+{
+	std::error_code ec;
+	fs::remove_all(aside, ec);
+	if (!ec)
+		return true;
+	if (failure)
+		*failure = ec;
+
+	wlog_warn(L"Could not remove updater root quarantine %s: %s", aside.c_str(), format_hex32(ec.value()).c_str());
+	return false;
+}
+
 bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostics)
 {
 	for (int attempt = 0; attempt < 8; attempt++) {
@@ -198,10 +218,12 @@ bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostic
 		if (MoveFileExW(root.c_str(), aside.c_str(), 0)) {
 			if (diagnostics)
 				diagnostics->root_replaced = true;
-			if (MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+			if (remove_quarantine(aside)) {
+				wlog_warn(L"Moved and removed untrusted updater root %s", root.c_str());
+			} else if (MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
 				wlog_warn(L"Moved untrusted updater root %s to %s; it is queued for deletion at reboot", root.c_str(), aside.c_str());
 			} else {
-				wlog_warn(L"Could not queue updater root quarantine %s for deletion: %s", aside.c_str(), hex32(GetLastError()).c_str());
+				wlog_warn(L"Could not queue updater root quarantine %s for deletion: %s", aside.c_str(), format_hex32(GetLastError()).c_str());
 			}
 			return true;
 		}
@@ -209,7 +231,7 @@ bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostic
 		const DWORD error = GetLastError();
 		if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) {
 			const bool blocked = error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
-			set_failure(diagnostics, L"Could not move untrusted updater root " + root.wstring() + L" aside: " + hex32(error),
+			set_failure(diagnostics, L"Could not move untrusted updater root " + root.wstring() + L" aside: " + format_hex32(error),
 				    blocked ? "UpdaterStorageQuarantineBlocked" : "UpdaterStorageFailure");
 			return false;
 		}
@@ -265,6 +287,7 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 	std::error_code iteration_error;
 	const auto now = fs::file_time_type::clock::now();
 	std::vector<fs::path> stale_runs;
+	std::vector<fs::path> stale_quarantines;
 	for (const fs::directory_entry &entry : fs::directory_iterator(root, fs::directory_options::skip_permission_denied, iteration_error)) {
 		std::error_code type_error;
 		if (!entry.is_directory(type_error) || type_error)
@@ -290,7 +313,24 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 		stale_runs.push_back(entry.path());
 	}
 	if (iteration_error && diagnostics && diagnostics->cleanup_warning.empty()) {
-		diagnostics->cleanup_warning = L"Failed to enumerate updater runs below " + root.wstring() + L": " + hex32(iteration_error.value());
+		diagnostics->cleanup_warning = L"Failed to enumerate updater runs below " + root.wstring() + L": " + format_hex32(iteration_error.value());
+		wlog_warn(L"%s", diagnostics->cleanup_warning.c_str());
+	}
+
+	std::error_code quarantine_iteration_error;
+	for (const fs::directory_entry &entry :
+	     fs::directory_iterator(root.parent_path(), fs::directory_options::skip_permission_denied, quarantine_iteration_error)) {
+		if (!quarantine_leaf(root, entry.path()))
+			continue;
+
+		std::error_code modified_error;
+		const auto modified = entry.last_write_time(modified_error);
+		if (!modified_error && now - modified >= kQuarantineAge)
+			stale_quarantines.push_back(entry.path());
+	}
+	if (quarantine_iteration_error && diagnostics && diagnostics->cleanup_warning.empty()) {
+		diagnostics->cleanup_warning =
+			L"Failed to enumerate updater root quarantines beside " + root.wstring() + L": " + format_hex32(quarantine_iteration_error.value());
 		wlog_warn(L"%s", diagnostics->cleanup_warning.c_str());
 	}
 
@@ -300,6 +340,16 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 			wlog_info(L"Pruned abandoned updater run %s", run.c_str());
 		} else if (diagnostics && diagnostics->cleanup_warning.empty()) {
 			diagnostics->cleanup_warning = cleanup.failure;
+		}
+	}
+
+	for (const fs::path &quarantine : stale_quarantines) {
+		std::error_code remove_error;
+		if (remove_quarantine(quarantine, &remove_error)) {
+			wlog_info(L"Pruned updater root quarantine %s", quarantine.c_str());
+		} else if (diagnostics && diagnostics->cleanup_warning.empty()) {
+			diagnostics->cleanup_warning =
+				L"Failed to prune updater root quarantine " + quarantine.wstring() + L": " + format_hex32(remove_error.value());
 		}
 	}
 }
@@ -356,7 +406,7 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 	std::error_code ec;
 	fs::remove_all(dir, ec);
 	if (ec) {
-		set_failure(diagnostics, L"Failed to clean updater run " + dir.wstring() + L": " + hex32(ec.value()));
+		set_failure(diagnostics, L"Failed to clean updater run " + dir.wstring() + L": " + format_hex32(ec.value()));
 		return false;
 	}
 	return true;

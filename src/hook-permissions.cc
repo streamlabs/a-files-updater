@@ -67,18 +67,6 @@ bool is_reparse_point(const fs::path &path)
 	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
-/* manual: stream number formatting is not locale-safe on the worker thread */
-std::wstring hex32(uint32_t value)
-{
-	static const wchar_t digits[] = L"0123456789ABCDEF";
-	std::wstring text = L"0x";
-
-	for (int shift = 28; shift >= 0; shift -= 4)
-		text += digits[(value >> shift) & 0xF];
-
-	return text;
-}
-
 std::wstring sid_string(PSID sid)
 {
 	wchar_t *text = nullptr;
@@ -123,7 +111,7 @@ bool object_is_trusted(const fs::path &path, DWORD write_mask, std::wstring *why
 
 	const DWORD attributes = GetFileAttributesW(path.c_str());
 	if (attributes == INVALID_FILE_ATTRIBUTES)
-		return refuse(L"cannot be read: " + hex32(GetLastError()));
+		return refuse(L"cannot be read: " + format_hex32(GetLastError()));
 	if (attributes & FILE_ATTRIBUTE_REPARSE_POINT)
 		return refuse(L"is a reparse point");
 
@@ -134,7 +122,7 @@ bool object_is_trusted(const fs::path &path, DWORD write_mask, std::wstring *why
 	const DWORD read = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr, &dacl,
 						 nullptr, &descriptor);
 	if (read != ERROR_SUCCESS)
-		return refuse(L"has an unreadable security descriptor: " + hex32(read));
+		return refuse(L"has an unreadable security descriptor: " + format_hex32(read));
 
 	std::wstring reason;
 
@@ -149,13 +137,13 @@ bool object_is_trusted(const fs::path &path, DWORD write_mask, std::wstring *why
 			ACCESS_ALLOWED_ACE *ace = nullptr;
 
 			if (!GetAce(dacl, i, reinterpret_cast<void **>(&ace))) {
-				reason = L"has an unreadable ACE at index " + hex32(i);
+				reason = L"has an unreadable ACE at index " + format_hex32(i);
 				break;
 			}
 			if (ace->Header.AceType == ACCESS_DENIED_ACE_TYPE)
 				continue;
 			if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE) {
-				reason = L"has an ACE at index " + hex32(i) + L" of unhandled type " + hex32(ace->Header.AceType);
+				reason = L"has an ACE at index " + format_hex32(i) + L" of unhandled type " + format_hex32(ace->Header.AceType);
 				break;
 			}
 			/* inherit-only grants nothing on this object */
@@ -166,7 +154,8 @@ bool object_is_trusted(const fs::path &path, DWORD write_mask, std::wstring *why
 
 			PSID grantee = reinterpret_cast<PSID>(&ace->SidStart);
 			if (!sid_is_trusted(grantee)) {
-				reason = L"grants " + sid_string(grantee) + L" write access " + hex32(ace->Mask & write_mask) + L", out of " + hex32(ace->Mask);
+				reason = L"grants " + sid_string(grantee) + L" write access " + format_hex32(ace->Mask & write_mask) + L", out of " +
+					 format_hex32(ace->Mask);
 				break;
 			}
 		}

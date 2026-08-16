@@ -32,8 +32,9 @@ bool prepare_updater_temp_dir(const fs::path &dir, bool allow_existing, UpdaterS
  * collected. Exported so native tests can exercise the same policy safely. */
 bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostics = nullptr);
 
-/* Removes abandoned run-* siblings. Runs without rollback originals are
- * eligible after one day; recovery backups are retained for seven days. */
+/* Removes abandoned run-* children and stale root-quarantine siblings. Runs
+ * without rollback originals and quarantines are eligible after one day;
+ * recovery backups are retained for seven days. */
 void prune_updater_runs(const fs::path &root, bool enforce_ancestors = true, UpdaterStorageDiagnostics *diagnostics = nullptr);
 
 /* Removes a run directory only after verifying the object is still trusted. */

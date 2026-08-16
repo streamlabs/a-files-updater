@@ -21,3 +21,14 @@ std::wstring security_random_hex(size_t word_count)
 
 	return result;
 }
+
+std::wstring format_hex32(uint32_t value)
+{
+	static const wchar_t digits[] = L"0123456789ABCDEF";
+	std::wstring result = L"0x";
+
+	for (int shift = 28; shift >= 0; shift -= 4)
+		result += digits[(value >> shift) & 0xF];
+
+	return result;
+}

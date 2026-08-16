@@ -356,7 +356,7 @@ void untrusted_updater_root_is_replaced(const fs::path &scratch)
 	CHECK(!diagnostics.root_replaced_reason.empty());
 	check_updater_hardened(root, __LINE__);
 	CHECK(!file_exists(root / L"planted.dll"));
-	CHECK(quarantine_exists(root));
+	CHECK(!quarantine_exists(root));
 }
 
 void updater_root_replaces_a_file(const fs::path &scratch)
@@ -367,7 +367,7 @@ void updater_root_replaces_a_file(const fs::path &scratch)
 	write_file(root, "squatted");
 	CHECK(prepare_updater_root(root));
 	check_updater_hardened(root, __LINE__);
-	CHECK(quarantine_exists(root));
+	CHECK(!quarantine_exists(root));
 }
 
 void blocked_updater_root_quarantine_is_distinct(const fs::path &scratch)
@@ -461,6 +461,30 @@ void stale_updater_runs_are_pruned(const fs::path &scratch)
 	CHECK(!file_exists(abandoned));
 	CHECK(!file_exists(recovery));
 	CHECK(file_exists(fresh));
+}
+
+void stale_updater_root_quarantines_are_pruned(const fs::path &scratch)
+{
+	Case c(scratch, "stale_updater_root_quarantines_are_pruned");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path stale = c.root / L"updater-root.quarantine-00000000000000000000000000000001";
+	const fs::path fresh = c.root / L"updater-root.quarantine-00000000000000000000000000000002";
+	const fs::path unrelated = c.root / L"updater-root.quarantine-not-random";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(make_untrusted(stale));
+	CHECK(make_untrusted(fresh));
+	CHECK(make_untrusted(unrelated));
+	write_file(stale / L"planted.dll", "theirs");
+
+	std::error_code ec;
+	fs::last_write_time(stale, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+	fs::last_write_time(unrelated, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+
+	prune_updater_runs(root);
+	CHECK(!file_exists(stale));
+	CHECK(file_exists(fresh));
+	CHECK(file_exists(unrelated));
 }
 
 void untrusted_stale_run_is_not_pruned(const fs::path &scratch)
@@ -897,6 +921,7 @@ int wmain(int argc, wchar_t **argv)
 	preview_ancestor_policy_is_used_for_cleanup(scratch);
 	preview_ancestor_policy_is_used_for_pruning(scratch);
 	stale_updater_runs_are_pruned(scratch);
+	stale_updater_root_quarantines_are_pruned(scratch);
 	untrusted_stale_run_is_not_pruned(scratch);
 	untrusted_directory_is_replaced(scratch);
 	secured_directory_is_left_alone(scratch);
