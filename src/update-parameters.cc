@@ -10,6 +10,10 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 		fclose(log_file);
 		log_file = nullptr;
 	}
+	if (temp_dir_lock) {
+		release_updater_run_lock(temp_dir_lock);
+		temp_dir_lock = nullptr;
+	}
 
 	if (!owns_temp_dir || retain_temp_dir || temp_dir.empty())
 		return true;

@@ -285,6 +285,21 @@ void untrusted_updater_directory_is_not_adopted(const fs::path &scratch)
 	CHECK(read_sddl(temp_dir).find(L"FA;;;BU") != std::wstring::npos);
 }
 
+void updater_directory_requires_the_updater_acl(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_requires_the_updater_acl");
+	const fs::path missing_admin = c.root / L"missing-admin";
+	const fs::path extra_reader = c.root / L"extra-reader";
+
+	CHECK(prepare_updater_temp_dir(missing_admin, false));
+	CHECK(apply_sddl(missing_admin, L"O:BAD:PAI(A;OICI;FA;;;SY)"));
+	CHECK(!prepare_updater_temp_dir(missing_admin, true));
+
+	CHECK(prepare_updater_temp_dir(extra_reader, false));
+	CHECK(apply_sddl(extra_reader, L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)"));
+	CHECK(!prepare_updater_temp_dir(extra_reader, true));
+}
+
 void updater_directory_needs_a_trusted_parent(const fs::path &scratch)
 {
 	Case c(scratch, "updater_directory_needs_a_trusted_parent");
@@ -356,7 +371,7 @@ void untrusted_updater_root_is_replaced(const fs::path &scratch)
 	CHECK(!diagnostics.root_replaced_reason.empty());
 	check_updater_hardened(root, __LINE__);
 	CHECK(!file_exists(root / L"planted.dll"));
-	CHECK(!quarantine_exists(root));
+	CHECK(quarantine_exists(root));
 }
 
 void updater_root_replaces_a_file(const fs::path &scratch)
@@ -463,28 +478,26 @@ void stale_updater_runs_are_pruned(const fs::path &scratch)
 	CHECK(file_exists(fresh));
 }
 
-void stale_updater_root_quarantines_are_pruned(const fs::path &scratch)
+void active_updater_run_is_not_pruned(const fs::path &scratch)
 {
-	Case c(scratch, "stale_updater_root_quarantines_are_pruned");
+	Case c(scratch, "active_updater_run_is_not_pruned");
 	const fs::path root = c.root / L"updater-root";
-	const fs::path stale = c.root / L"updater-root.quarantine-00000000000000000000000000000001";
-	const fs::path fresh = c.root / L"updater-root.quarantine-00000000000000000000000000000002";
-	const fs::path unrelated = c.root / L"updater-root.quarantine-not-random";
+	const fs::path run = root / L"run-00000000000000000000000000000001";
 
 	CHECK(prepare_updater_temp_dir(root, false));
-	CHECK(make_untrusted(stale));
-	CHECK(make_untrusted(fresh));
-	CHECK(make_untrusted(unrelated));
-	write_file(stale / L"planted.dll", "theirs");
+	CHECK(prepare_updater_temp_dir(run, false));
+	void *lock = nullptr;
+	CHECK(acquire_updater_run_lock(run, &lock));
 
 	std::error_code ec;
-	fs::last_write_time(stale, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
-	fs::last_write_time(unrelated, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+	fs::last_write_time(run, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
 
 	prune_updater_runs(root);
-	CHECK(!file_exists(stale));
-	CHECK(file_exists(fresh));
-	CHECK(file_exists(unrelated));
+	CHECK(file_exists(run));
+
+	release_updater_run_lock(lock);
+	prune_updater_runs(root);
+	CHECK(!file_exists(run));
 }
 
 void untrusted_stale_run_is_not_pruned(const fs::path &scratch)
@@ -908,6 +921,7 @@ int wmain(int argc, wchar_t **argv)
 
 	updater_directory_is_created_and_verified(scratch);
 	untrusted_updater_directory_is_not_adopted(scratch);
+	updater_directory_requires_the_updater_acl(scratch);
 	updater_directory_needs_a_trusted_parent(scratch);
 	updater_directory_accepts_a_creation_only_parent(scratch);
 	updater_directory_rejects_non_normal_paths(scratch);
@@ -921,7 +935,7 @@ int wmain(int argc, wchar_t **argv)
 	preview_ancestor_policy_is_used_for_cleanup(scratch);
 	preview_ancestor_policy_is_used_for_pruning(scratch);
 	stale_updater_runs_are_pruned(scratch);
-	stale_updater_root_quarantines_are_pruned(scratch);
+	active_updater_run_is_not_pruned(scratch);
 	untrusted_stale_run_is_not_pruned(scratch);
 	untrusted_directory_is_replaced(scratch);
 	secured_directory_is_left_alone(scratch);

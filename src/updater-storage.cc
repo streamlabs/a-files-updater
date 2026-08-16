@@ -17,11 +17,12 @@
 namespace {
 
 const wchar_t *const kUpdaterDirSddl = L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+const wchar_t *const kRunLockName = L".run-lock";
 constexpr auto kAbandonedRunAge = std::chrono::hours(24);
 constexpr auto kRecoveryRunAge = std::chrono::hours(24 * 7);
-constexpr auto kQuarantineAge = std::chrono::hours(24);
 
 enum class PrepareResult { Ready, Collision, Failed };
+enum class RunActivity { Inactive, Active, Unknown };
 
 void set_failure(UpdaterStorageDiagnostics *diagnostics, const std::wstring &reason, const std::string &category = "UpdaterStorageFailure")
 {
@@ -40,23 +41,58 @@ void set_ancestor_warning(UpdaterStorageDiagnostics *diagnostics, const fs::path
 	wlog_warn(L"%s; continuing in preview mode", reason.c_str());
 }
 
-bool dacl_is_protected(const fs::path &dir, std::wstring &why)
+bool updater_acl_is_valid(const fs::path &dir, std::wstring &why)
 {
 	PSECURITY_DESCRIPTOR descriptor = nullptr;
-	const DWORD read = GetNamedSecurityInfoW(dir.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, nullptr, &descriptor);
+	PSID owner = nullptr;
+	PACL dacl = nullptr;
+	const DWORD read = GetNamedSecurityInfoW(dir.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner, nullptr, &dacl,
+						 nullptr, &descriptor);
 	if (read != ERROR_SUCCESS) {
-		why = L"has an unreadable DACL control: " + format_hex32(read);
+		why = L"has an unreadable updater security descriptor: " + format_hex32(read);
 		return false;
 	}
 
 	SECURITY_DESCRIPTOR_CONTROL control = 0;
 	DWORD revision = 0;
-	const bool protected_dacl = GetSecurityDescriptorControl(descriptor, &control, &revision) && (control & SE_DACL_PROTECTED) != 0;
-	if (!protected_dacl)
+	if (!owner || !IsWellKnownSid(owner, WinBuiltinAdministratorsSid)) {
+		why = L"is not owned by Administrators";
+	} else if (!GetSecurityDescriptorControl(descriptor, &control, &revision) || (control & SE_DACL_PROTECTED) == 0) {
 		why = L"has a DACL that inherits from its parent";
+	} else if (!dacl) {
+		why = L"has no updater DACL";
+	} else {
+		bool administrators = false;
+		bool system = false;
+		const BYTE expected_flags = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+
+		for (WORD i = 0; i < dacl->AceCount && why.empty(); i++) {
+			ACCESS_ALLOWED_ACE *ace = nullptr;
+			if (!GetAce(dacl, i, reinterpret_cast<void **>(&ace))) {
+				why = L"has an unreadable updater ACE at index " + format_hex32(i);
+				break;
+			}
+			if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE || ace->Header.AceFlags != expected_flags || ace->Mask != FILE_ALL_ACCESS) {
+				why = L"has an unexpected updater ACE at index " + format_hex32(i);
+				break;
+			}
+
+			PSID grantee = reinterpret_cast<PSID>(&ace->SidStart);
+			if (IsWellKnownSid(grantee, WinBuiltinAdministratorsSid) && !administrators) {
+				administrators = true;
+			} else if (IsWellKnownSid(grantee, WinLocalSystemSid) && !system) {
+				system = true;
+			} else {
+				why = L"has an unexpected updater trustee at ACE index " + format_hex32(i);
+			}
+		}
+
+		if (why.empty() && (!administrators || !system || dacl->AceCount != 2))
+			why = L"does not grant exactly Administrators and SYSTEM inheritable full control";
+	}
 
 	LocalFree(descriptor);
-	return protected_dacl;
+	return why.empty();
 }
 
 bool trusted_directory(const fs::path &dir, bool enforce_ancestors, UpdaterStorageDiagnostics *diagnostics)
@@ -73,9 +109,9 @@ bool trusted_directory(const fs::path &dir, bool enforce_ancestors, UpdaterStora
 		return false;
 	}
 
-	std::wstring dacl_why;
-	if (!dacl_is_protected(dir, dacl_why)) {
-		set_failure(diagnostics, L"Refusing updater directory " + dir.wstring() + L": it " + dacl_why);
+	std::wstring acl_why;
+	if (!updater_acl_is_valid(dir, acl_why)) {
+		set_failure(diagnostics, L"Refusing updater directory " + dir.wstring() + L": it " + acl_why);
 		return false;
 	}
 
@@ -177,31 +213,16 @@ bool run_leaf(const fs::path &path)
 	return true;
 }
 
-bool quarantine_leaf(const fs::path &root, const fs::path &path)
+bool remove_quarantine_leaf(const fs::path &aside)
 {
-	const std::wstring prefix = root.filename().wstring() + L".quarantine-";
-	const std::wstring name = path.filename().wstring();
-	if (name.size() != prefix.size() + 32 || name.rfind(prefix, 0) != 0)
-		return false;
-
-	for (size_t i = prefix.size(); i < name.size(); i++) {
-		if (!iswxdigit(name[i]))
-			return false;
+	/* The quarantined tree is attacker-controlled. Only remove a file, reparse
+	 * point, or empty directory; never traverse it while elevated. */
+	const DWORD attributes = GetFileAttributesW(aside.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES) {
+		const DWORD error = GetLastError();
+		return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 	}
-	return true;
-}
-
-bool remove_quarantine(const fs::path &aside, std::error_code *failure = nullptr)
-{
-	std::error_code ec;
-	fs::remove_all(aside, ec);
-	if (!ec)
-		return true;
-	if (failure)
-		*failure = ec;
-
-	wlog_warn(L"Could not remove updater root quarantine %s: %s", aside.c_str(), format_hex32(ec.value()).c_str());
-	return false;
+	return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryW(aside.c_str()) != 0 : DeleteFileW(aside.c_str()) != 0;
 }
 
 bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostics)
@@ -218,7 +239,7 @@ bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostic
 		if (MoveFileExW(root.c_str(), aside.c_str(), 0)) {
 			if (diagnostics)
 				diagnostics->root_replaced = true;
-			if (remove_quarantine(aside)) {
+			if (remove_quarantine_leaf(aside)) {
 				wlog_warn(L"Moved and removed untrusted updater root %s", root.c_str());
 			} else if (MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
 				wlog_warn(L"Moved untrusted updater root %s to %s; it is queued for deletion at reboot", root.c_str(), aside.c_str());
@@ -241,6 +262,36 @@ bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostic
 	return false;
 }
 
+RunActivity run_activity(const fs::path &run, std::wstring &why)
+{
+	const fs::path lock_path = run / kRunLockName;
+	HANDLE lock = CreateFileW(lock_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+				  FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+	if (lock == INVALID_HANDLE_VALUE) {
+		const DWORD error = GetLastError();
+		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+			return RunActivity::Inactive;
+		if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION)
+			return RunActivity::Active;
+		why = L"Could not inspect updater run lock " + lock_path.wstring() + L": " + format_hex32(error);
+		return RunActivity::Unknown;
+	}
+
+	FILE_ATTRIBUTE_TAG_INFO tag = {};
+	const bool readable = GetFileInformationByHandleEx(lock, FileAttributeTagInfo, &tag, sizeof(tag)) != 0;
+	const DWORD error = readable ? ERROR_SUCCESS : GetLastError();
+	CloseHandle(lock);
+	if (!readable) {
+		why = L"Could not inspect updater run lock " + lock_path.wstring() + L": " + format_hex32(error);
+		return RunActivity::Unknown;
+	}
+	if ((tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+		why = L"Refusing unexpected updater run lock " + lock_path.wstring();
+		return RunActivity::Unknown;
+	}
+	return RunActivity::Inactive;
+}
+
 } // namespace
 
 fs::path programdata_updater_root()
@@ -255,6 +306,41 @@ fs::path programdata_updater_root()
 bool prepare_updater_temp_dir(const fs::path &dir, bool allow_existing, UpdaterStorageDiagnostics *diagnostics)
 {
 	return prepare_directory(dir, allow_existing, true, diagnostics) == PrepareResult::Ready;
+}
+
+bool acquire_updater_run_lock(const fs::path &dir, void **lock_handle, UpdaterStorageDiagnostics *diagnostics)
+{
+	if (!lock_handle) {
+		set_failure(diagnostics, L"Could not retain an updater run lock handle");
+		return false;
+	}
+
+	const fs::path lock_path = dir / kRunLockName;
+	/* Zero sharing is the liveness signal checked by run_activity(). */
+	HANDLE lock = CreateFileW(lock_path.c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+	if (lock == INVALID_HANDLE_VALUE) {
+		set_failure(diagnostics, L"Could not acquire updater run lock " + lock_path.wstring() + L": " + format_hex32(GetLastError()));
+		return false;
+	}
+
+	FILE_ATTRIBUTE_TAG_INFO tag = {};
+	const bool readable = GetFileInformationByHandleEx(lock, FileAttributeTagInfo, &tag, sizeof(tag)) != 0;
+	const DWORD error = readable ? ERROR_SUCCESS : GetLastError();
+	if (!readable || (tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+		CloseHandle(lock);
+		set_failure(diagnostics,
+			    L"Refusing unexpected updater run lock " + lock_path.wstring() + (error == ERROR_SUCCESS ? L"" : L": " + format_hex32(error)));
+		return false;
+	}
+
+	*lock_handle = lock;
+	return true;
+}
+
+void release_updater_run_lock(void *lock_handle)
+{
+	if (lock_handle && lock_handle != INVALID_HANDLE_VALUE)
+		CloseHandle(lock_handle);
 }
 
 bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostics)
@@ -287,7 +373,6 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 	std::error_code iteration_error;
 	const auto now = fs::file_time_type::clock::now();
 	std::vector<fs::path> stale_runs;
-	std::vector<fs::path> stale_quarantines;
 	for (const fs::directory_entry &entry : fs::directory_iterator(root, fs::directory_options::skip_permission_denied, iteration_error)) {
 		std::error_code type_error;
 		if (!entry.is_directory(type_error) || type_error)
@@ -310,27 +395,23 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 		if (now - modified < retention)
 			continue;
 
+		std::wstring activity_why;
+		const RunActivity activity = run_activity(entry.path(), activity_why);
+		if (activity == RunActivity::Active) {
+			wlog_info(L"Keeping active updater run %s", entry.path().c_str());
+			continue;
+		}
+		if (activity == RunActivity::Unknown) {
+			if (diagnostics && diagnostics->cleanup_warning.empty())
+				diagnostics->cleanup_warning = activity_why;
+			wlog_warn(L"%s", activity_why.c_str());
+			continue;
+		}
+
 		stale_runs.push_back(entry.path());
 	}
 	if (iteration_error && diagnostics && diagnostics->cleanup_warning.empty()) {
 		diagnostics->cleanup_warning = L"Failed to enumerate updater runs below " + root.wstring() + L": " + format_hex32(iteration_error.value());
-		wlog_warn(L"%s", diagnostics->cleanup_warning.c_str());
-	}
-
-	std::error_code quarantine_iteration_error;
-	for (const fs::directory_entry &entry :
-	     fs::directory_iterator(root.parent_path(), fs::directory_options::skip_permission_denied, quarantine_iteration_error)) {
-		if (!quarantine_leaf(root, entry.path()))
-			continue;
-
-		std::error_code modified_error;
-		const auto modified = entry.last_write_time(modified_error);
-		if (!modified_error && now - modified >= kQuarantineAge)
-			stale_quarantines.push_back(entry.path());
-	}
-	if (quarantine_iteration_error && diagnostics && diagnostics->cleanup_warning.empty()) {
-		diagnostics->cleanup_warning =
-			L"Failed to enumerate updater root quarantines beside " + root.wstring() + L": " + format_hex32(quarantine_iteration_error.value());
 		wlog_warn(L"%s", diagnostics->cleanup_warning.c_str());
 	}
 
@@ -340,16 +421,6 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 			wlog_info(L"Pruned abandoned updater run %s", run.c_str());
 		} else if (diagnostics && diagnostics->cleanup_warning.empty()) {
 			diagnostics->cleanup_warning = cleanup.failure;
-		}
-	}
-
-	for (const fs::path &quarantine : stale_quarantines) {
-		std::error_code remove_error;
-		if (remove_quarantine(quarantine, &remove_error)) {
-			wlog_info(L"Pruned updater root quarantine %s", quarantine.c_str());
-		} else if (diagnostics && diagnostics->cleanup_warning.empty()) {
-			diagnostics->cleanup_warning =
-				L"Failed to prune updater root quarantine " + quarantine.wstring() + L": " + format_hex32(remove_error.value());
 		}
 	}
 }

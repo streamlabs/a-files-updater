@@ -227,7 +227,8 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	if (temp_dir_arg->count > 0) {
 		params->temp_dir = fetch_path(temp_dir_arg->sval[0], strlen(temp_dir_arg->sval[0]));
 		if (!prepare_updater_temp_dir(params->temp_dir, force_arg->count > 0, &storage_diagnostics)) {
-			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure" : storage_diagnostics.failure_category;
+			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure"
+												      : storage_diagnostics.failure_category;
 			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
 			params->startup_diagnostic = params->startup_error_reason;
 			success = false;
@@ -241,7 +242,8 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		params->temp_dir = create_default_updater_temp_dir(&storage_diagnostics);
 
 		if (params->temp_dir.empty()) {
-			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure" : storage_diagnostics.failure_category;
+			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure"
+												      : storage_diagnostics.failure_category;
 			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
 			params->startup_diagnostic = params->startup_error_reason;
 			success = false;
@@ -249,6 +251,13 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		}
 		params->owns_temp_dir = true;
 		params->enforce_temp_ancestors = false;
+	}
+	if (!acquire_updater_run_lock(params->temp_dir, &params->temp_dir_lock, &storage_diagnostics)) {
+		params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure" : storage_diagnostics.failure_category;
+		params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
+		params->startup_diagnostic = params->startup_error_reason;
+		success = false;
+		goto parse_error;
 	}
 	if (!storage_diagnostics.ancestor_warning.empty()) {
 		params->storage_ancestor_warning = ConvertToUtf8(storage_diagnostics.ancestor_warning);
