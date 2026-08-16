@@ -36,10 +36,12 @@ bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagn
  * an active run from an abandoned one. */
 bool acquire_updater_run_lock(const fs::path &dir, void **lock_handle, UpdaterStorageDiagnostics *diagnostics = nullptr);
 void release_updater_run_lock(void *lock_handle);
+bool remove_updater_run_lock(const fs::path &dir, UpdaterStorageDiagnostics *diagnostics = nullptr);
 
 /* Removes abandoned run-* children. Runs without rollback originals are
- * eligible after one day; recovery backups are retained for seven days.
- * Active runs are always skipped. */
+ * eligible after one day; recovery backups become eligible after seven days.
+ * Active runs are always skipped. Also retries non-recursive removal of exact
+ * root-quarantine siblings; non-empty quarantine trees remain untouched. */
 void prune_updater_runs(const fs::path &root, bool enforce_ancestors = true, UpdaterStorageDiagnostics *diagnostics = nullptr);
 
 /* Removes a run directory only after verifying the object is still trusted. */

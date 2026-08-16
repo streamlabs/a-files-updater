@@ -23,6 +23,7 @@
 - Includes crash reporting (`crash-reporter.cc`) and an error state file for the parent app to inspect
 - DPI-aware — responds to `WM_DPICHANGED` and scales all UI elements accordingly
 - Removes the current updater run after normal completion, prunes abandoned payload runs after 24 hours while skipping active runs, and makes failed-rollback originals eligible for pruning after 7 days
+- Retries leaf-only cleanup of quarantined updater roots on later runs; non-empty attacker-owned trees are never recursively traversed and remain until emptied
 
 # How to build
 As easy as: 

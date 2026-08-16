@@ -259,6 +259,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		success = false;
 		goto parse_error;
 	}
+	params->cleanup_temp_dir_lock = true;
 	if (!storage_diagnostics.ancestor_warning.empty()) {
 		params->storage_ancestor_warning = ConvertToUtf8(storage_diagnostics.ancestor_warning);
 		params->startup_diagnostic = params->storage_ancestor_warning;
@@ -331,10 +332,6 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	params->pids = make_vector_from_arg(pids_arg);
 	params->version.assign(version_arg->sval[0]);
 	params->details.assign(details_arg->sval[0]);
-
-	if (interactive_arg->count > 0) {
-		params->interactive = interactive_arg->ival[0];
-	}
 
 	if (hook_prompt_arg->count > 0) {
 		params->hook_prompt = hook_prompt_arg->ival[0];

@@ -27,6 +27,7 @@ struct update_parameters {
 	fs::path log_file_path;
 	FILE *log_file = nullptr;
 	void *temp_dir_lock = nullptr;
+	bool cleanup_temp_dir_lock = false;
 	std::string startup_error_category;
 	std::string startup_error_reason;
 	std::string startup_diagnostic;

@@ -14,6 +14,11 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 		release_updater_run_lock(temp_dir_lock);
 		temp_dir_lock = nullptr;
 	}
+	if (cleanup_temp_dir_lock && !owns_temp_dir) {
+		if (!remove_updater_run_lock(temp_dir, diagnostics))
+			return false;
+		cleanup_temp_dir_lock = false;
+	}
 
 	if (!owns_temp_dir || retain_temp_dir || temp_dir.empty())
 		return true;
@@ -22,6 +27,7 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 		return false;
 
 	owns_temp_dir = false;
+	cleanup_temp_dir_lock = false;
 	return true;
 }
 

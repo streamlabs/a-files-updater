@@ -213,6 +213,20 @@ bool run_leaf(const fs::path &path)
 	return true;
 }
 
+bool quarantine_leaf(const fs::path &root, const fs::path &path)
+{
+	const std::wstring prefix = root.filename().wstring() + L".quarantine-";
+	const std::wstring name = path.filename().wstring();
+	if (name.size() != prefix.size() + 32 || name.rfind(prefix, 0) != 0)
+		return false;
+
+	for (size_t i = prefix.size(); i < name.size(); i++) {
+		if (!iswxdigit(name[i]))
+			return false;
+	}
+	return true;
+}
+
 bool remove_quarantine_leaf(const fs::path &aside)
 {
 	/* The quarantined tree is attacker-controlled. Only remove a file, reparse
@@ -220,9 +234,32 @@ bool remove_quarantine_leaf(const fs::path &aside)
 	const DWORD attributes = GetFileAttributesW(aside.c_str());
 	if (attributes == INVALID_FILE_ATTRIBUTES) {
 		const DWORD error = GetLastError();
-		return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+			return true;
+		return false;
 	}
+
 	return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? RemoveDirectoryW(aside.c_str()) != 0 : DeleteFileW(aside.c_str()) != 0;
+}
+
+void sweep_updater_root_quarantines(const fs::path &root, UpdaterStorageDiagnostics *diagnostics)
+{
+	std::error_code iteration_error;
+	std::vector<fs::path> candidates;
+	for (const fs::directory_entry &entry : fs::directory_iterator(root.parent_path(), fs::directory_options::skip_permission_denied, iteration_error)) {
+		if (quarantine_leaf(root, entry.path()))
+			candidates.push_back(entry.path());
+	}
+	if (iteration_error && diagnostics && diagnostics->cleanup_warning.empty()) {
+		diagnostics->cleanup_warning =
+			L"Failed to enumerate updater root quarantines beside " + root.wstring() + L": " + format_hex32(iteration_error.value());
+		wlog_warn(L"%s", diagnostics->cleanup_warning.c_str());
+	}
+
+	for (const fs::path &candidate : candidates) {
+		if (remove_quarantine_leaf(candidate))
+			wlog_info(L"Removed updater root quarantine %s", candidate.c_str());
+	}
 }
 
 bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostics)
@@ -314,6 +351,7 @@ bool acquire_updater_run_lock(const fs::path &dir, void **lock_handle, UpdaterSt
 		set_failure(diagnostics, L"Could not retain an updater run lock handle");
 		return false;
 	}
+	*lock_handle = nullptr;
 
 	const fs::path lock_path = dir / kRunLockName;
 	/* Zero sharing is the liveness signal checked by run_activity(). */
@@ -322,12 +360,15 @@ bool acquire_updater_run_lock(const fs::path &dir, void **lock_handle, UpdaterSt
 		set_failure(diagnostics, L"Could not acquire updater run lock " + lock_path.wstring() + L": " + format_hex32(GetLastError()));
 		return false;
 	}
+	const bool lock_created = GetLastError() != ERROR_ALREADY_EXISTS;
 
 	FILE_ATTRIBUTE_TAG_INFO tag = {};
 	const bool readable = GetFileInformationByHandleEx(lock, FileAttributeTagInfo, &tag, sizeof(tag)) != 0;
 	const DWORD error = readable ? ERROR_SUCCESS : GetLastError();
 	if (!readable || (tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
 		CloseHandle(lock);
+		if (lock_created)
+			DeleteFileW(lock_path.c_str());
 		set_failure(diagnostics,
 			    L"Refusing unexpected updater run lock " + lock_path.wstring() + (error == ERROR_SUCCESS ? L"" : L": " + format_hex32(error)));
 		return false;
@@ -341,6 +382,24 @@ void release_updater_run_lock(void *lock_handle)
 {
 	if (lock_handle && lock_handle != INVALID_HANDLE_VALUE)
 		CloseHandle(lock_handle);
+}
+
+bool remove_updater_run_lock(const fs::path &dir, UpdaterStorageDiagnostics *diagnostics)
+{
+	const fs::path lock_path = dir / kRunLockName;
+	if (DeleteFileW(lock_path.c_str()))
+		return true;
+
+	const DWORD error = GetLastError();
+	if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+		return true;
+	if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) {
+		wlog_info(L"Updater run lock %s is now held by another updater", lock_path.c_str());
+		return true;
+	}
+
+	set_failure(diagnostics, L"Could not remove updater run lock " + lock_path.wstring() + L": " + format_hex32(error));
+	return false;
 }
 
 bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostics)
@@ -430,6 +489,8 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 			diagnostics->cleanup_warning = cleanup.failure;
 		}
 	}
+
+	sweep_updater_root_quarantines(root, diagnostics);
 }
 
 fs::path create_default_updater_temp_dir(UpdaterStorageDiagnostics *diagnostics)
@@ -478,8 +539,22 @@ fs::path create_default_updater_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 
 bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, UpdaterStorageDiagnostics *diagnostics)
 {
-	if (!trusted_directory(dir, enforce_ancestors, diagnostics))
+	const auto missing = [&dir]() {
+		if (GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES)
+			return false;
+		const DWORD error = GetLastError();
+		return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+	};
+
+	if (missing())
+		return true;
+	if (!trusted_directory(dir, enforce_ancestors, diagnostics)) {
+		/* Another pruner can remove the same stale run between enumeration and
+		 * this validation. A vanished path is already the desired result. */
+		if (missing())
+			return true;
 		return false;
+	}
 
 	std::error_code ec;
 	fs::remove_all(dir, ec);

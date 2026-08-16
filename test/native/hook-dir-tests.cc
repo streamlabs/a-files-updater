@@ -424,6 +424,25 @@ void owned_updater_directory_is_cleaned(const fs::path &scratch)
 	CHECK(!file_exists(temp_dir));
 }
 
+void vanished_updater_directory_is_already_clean(const fs::path &scratch)
+{
+	Case c(scratch, "vanished_updater_directory_is_already_clean");
+	CHECK(cleanup_updater_temp_dir(c.root / L"missing"));
+}
+
+void updater_run_lock_can_be_removed(const fs::path &scratch)
+{
+	Case c(scratch, "updater_run_lock_can_be_removed");
+	const fs::path temp_dir = c.root / L"run";
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+
+	void *lock = nullptr;
+	CHECK(acquire_updater_run_lock(temp_dir, &lock));
+	release_updater_run_lock(lock);
+	CHECK(remove_updater_run_lock(temp_dir));
+	CHECK(!file_exists(temp_dir / L".run-lock"));
+}
+
 void preview_ancestor_policy_is_used_for_cleanup(const fs::path &scratch)
 {
 	Case c(scratch, "preview_ancestor_policy_is_used_for_cleanup");
@@ -476,6 +495,32 @@ void stale_updater_runs_are_pruned(const fs::path &scratch)
 	CHECK(!file_exists(abandoned));
 	CHECK(!file_exists(recovery));
 	CHECK(file_exists(fresh));
+}
+
+void updater_root_quarantine_sweep_is_non_recursive(const fs::path &scratch)
+{
+	Case c(scratch, "updater_root_quarantine_sweep_is_non_recursive");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path nonempty = c.root / L"updater-root.quarantine-00000000000000000000000000000001";
+	const fs::path empty = c.root / L"updater-root.quarantine-00000000000000000000000000000002";
+	const fs::path unrelated = c.root / L"updater-root.quarantine-not-random";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(make_untrusted(nonempty));
+	CHECK(make_untrusted(empty));
+	CHECK(make_untrusted(unrelated));
+	write_file(nonempty / L"planted.dll", "theirs");
+
+	prune_updater_runs(root);
+	CHECK(file_exists(nonempty));
+	CHECK(!file_exists(empty));
+	CHECK(file_exists(nonempty / L"planted.dll"));
+	CHECK(file_exists(unrelated));
+
+	std::error_code ec;
+	CHECK(fs::remove(nonempty / L"planted.dll", ec));
+	prune_updater_runs(root);
+	CHECK(!file_exists(nonempty));
 }
 
 void active_updater_run_is_not_pruned(const fs::path &scratch)
@@ -933,9 +978,12 @@ int wmain(int argc, wchar_t **argv)
 	blocked_updater_root_quarantine_is_distinct(scratch);
 	updater_directory_rejects_a_file(scratch);
 	owned_updater_directory_is_cleaned(scratch);
+	vanished_updater_directory_is_already_clean(scratch);
+	updater_run_lock_can_be_removed(scratch);
 	preview_ancestor_policy_is_used_for_cleanup(scratch);
 	preview_ancestor_policy_is_used_for_pruning(scratch);
 	stale_updater_runs_are_pruned(scratch);
+	updater_root_quarantine_sweep_is_non_recursive(scratch);
 	active_updater_run_is_not_pruned(scratch);
 	untrusted_stale_run_is_not_pruned(scratch);
 	untrusted_directory_is_replaced(scratch);
