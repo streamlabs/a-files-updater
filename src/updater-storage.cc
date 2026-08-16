@@ -381,6 +381,13 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 		if (entry.is_symlink(type_error) || type_error || !run_leaf(entry.path()))
 			continue;
 
+		UpdaterStorageDiagnostics validation;
+		if (!trusted_directory(entry.path(), enforce_ancestors, &validation)) {
+			if (diagnostics && diagnostics->cleanup_warning.empty())
+				diagnostics->cleanup_warning = validation.failure;
+			continue;
+		}
+
 		std::error_code modified_error;
 		const auto modified = entry.last_write_time(modified_error);
 		if (modified_error)

@@ -508,13 +508,14 @@ void untrusted_stale_run_is_not_pruned(const fs::path &scratch)
 
 	CHECK(prepare_updater_temp_dir(root, false));
 	CHECK(make_untrusted(run));
-
 	std::error_code ec;
+	CHECK(fs::create_directory(run / L".run-lock", ec));
+
 	fs::last_write_time(run, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
 	UpdaterStorageDiagnostics diagnostics;
 	prune_updater_runs(root, true, &diagnostics);
 	CHECK(file_exists(run));
-	CHECK(!diagnostics.cleanup_warning.empty());
+	CHECK(diagnostics.cleanup_warning.find(L"Refusing updater directory") != std::wstring::npos);
 }
 
 void untrusted_directory_is_replaced(const fs::path &scratch)
