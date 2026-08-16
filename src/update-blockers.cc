@@ -291,14 +291,14 @@ std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers)
 	return result;
 }
 
-std::vector<blocker_info> get_hook_dir_blockers()
+std::vector<blocker_info> get_hook_dir_blockers(const fs::path &hook_dir)
 {
 	blockers_map_t blockers;
 	std::error_code ec;
 
 	/* The Restart Manager registers files, so a process holding only a
 	 * handle on the directory itself does not show up here. */
-	for (fs::path file : hook_dir_files()) {
+	for (fs::path file : hook_dir_files(hook_dir)) {
 		if (!fs::exists(file, ec))
 			continue;
 
