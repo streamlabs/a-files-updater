@@ -4,6 +4,27 @@
 
 #include "logger/log.h"
 #include <aclapi.h>
+#include <unordered_map>
+#include <vector>
+
+namespace {
+
+using checksum_map_t = std::unordered_map<std::wstring, std::string>;
+
+checksum_map_t build_local_checksums(const local_manifest_t &local_manifest)
+{
+	checksum_map_t checksums;
+	checksums.reserve(local_manifest.size());
+	for (const auto &entry : local_manifest) {
+		fs::path path = entry.first;
+		path.make_preferred();
+		checksums.emplace(path.native(), entry.second);
+	}
+
+	return checksums;
+}
+
+} // namespace
 
 FileUpdater::FileUpdater(fs::path old_files_dir, fs::path app_dir, fs::path new_files_dir, const manifest_map_t &manifest,
 			 const local_manifest_t &local_manifest, update_client *client)
@@ -21,6 +42,11 @@ FileUpdater::~FileUpdater()
 {
 	std::error_code ec;
 
+	if (m_keep_old_files) {
+		wlog_warn(L"Keeping backup folder after failed revert: %s", m_old_files_dir.c_str());
+		return;
+	}
+
 	fs::remove_all(m_old_files_dir, ec);
 	if (ec) {
 		wlog_warn(L"Failed to cleanup temp folder.");
@@ -29,7 +55,7 @@ FileUpdater::~FileUpdater()
 
 void FileUpdater::update()
 {
-	std::string version_file_key = "resources\app.asar";
+	std::string version_file_key = "resources\\app.asar";
 	manifest_map_t::const_iterator iter = m_manifest.begin();
 
 	while (iter != m_manifest.end()) {
@@ -42,6 +68,8 @@ void FileUpdater::update()
 	manifest_map_t::const_iterator version_file = m_manifest.find(version_file_key);
 	if (version_file != m_manifest.end()) {
 		update_entry_with_retries(version_file, m_new_files_dir);
+	} else {
+		log_warn("Manifest does not contain %s; app.asar update was not deferred", version_file_key.c_str());
 	}
 
 	if (!is_local_files_updated()) {
@@ -68,6 +96,10 @@ void FileUpdater::update_entry_with_retries(manifest_map_t::const_iterator &iter
 				wlog_warn(L"Have failed to update file: %s, no space on device", wmsg.c_str());
 				throw std::runtime_error("Error: no space on device");
 			}
+		} else if (ret == std::errc::illegal_byte_sequence) {
+			std::wstring wmsg = ConvertToUtf16WS(iter->first);
+			wlog_warn(L"Have failed to update file: %s, checksum mismatch", wmsg.c_str());
+			throw std::runtime_error("Error: file checksum mismatch");
 		} else if (ret) {
 			if (retries == 1) {
 				std::wstring wmsg = ConvertToUtf16WS(iter->first);
@@ -100,11 +132,19 @@ std::error_code FileUpdater::update_entry(manifest_map_t::const_iterator &iter, 
 		fs::path to_path(m_app_dir);
 		to_path /= file_name_part;
 
-		fs::path old_file_path(m_old_files_dir);
-		old_file_path /= file_name_part;
-
 		fs::path from_path(new_files_dir);
 		from_path /= file_name_part;
+
+		std::string staged_checksum = calculate_files_checksum_safe(from_path);
+		if (staged_checksum.empty()) {
+			log_error("Failed to calculate staged file checksum before update: %s", iter->first.c_str());
+			return std::make_error_code(std::errc::io_error);
+		}
+		if (staged_checksum != iter->second.hash_sum) {
+			log_error("Staged file %s checksum mismatch before update, expected %s, got %s", iter->first.c_str(), iter->second.hash_sum.c_str(),
+				  staged_checksum.c_str());
+			return std::make_error_code(std::errc::illegal_byte_sequence);
+		}
 
 		fs::create_directories(to_path.parent_path(), ec);
 		if (ec) {
@@ -146,13 +186,20 @@ bool FileUpdater::reset_rights(const fs::path &path)
 
 void FileUpdater::revert()
 {
-	/* Generate the manifest for the current application directory */
-	fs::recursive_directory_iterator iter(m_old_files_dir);
+	m_keep_old_files = true;
+
+	struct revert_entry_t {
+		fs::path from_path;
+		fs::path to_path;
+	};
+
 	fs::recursive_directory_iterator end_iter{};
 	std::error_code ec;
 	int error_count = 0;
+	std::vector<revert_entry_t> revert_entries;
+	checksum_map_t local_checksums = build_local_checksums(m_local_manifest);
 
-	for (; iter != end_iter; ++iter) {
+	for (fs::recursive_directory_iterator iter(m_old_files_dir); iter != end_iter; ++iter) {
 		if (fs::is_directory(iter->path())) {
 			continue;
 		}
@@ -162,13 +209,57 @@ void FileUpdater::revert()
 		fs::path to_path(m_app_dir);
 		to_path /= rel_path;
 
+		fs::path preferred_to_path = to_path;
+		preferred_to_path.make_preferred();
+
+		auto expected_checksum = local_checksums.find(preferred_to_path.native());
+		if (expected_checksum == local_checksums.end()) {
+			wlog_warn(L"Revert cannot find original checksum for %s; restoring backup without preflight verification", rel_path.c_str());
+			revert_entries.push_back({iter->path(), to_path});
+			continue;
+		}
+		if (expected_checksum->second.empty()) {
+			wlog_warn(L"Revert has no original checksum for %s; restoring backup without preflight verification", rel_path.c_str());
+			revert_entries.push_back({iter->path(), to_path});
+			continue;
+		}
+
+		std::string backup_checksum;
+		for (int attempt = 0; attempt < 3; ++attempt) {
+			backup_checksum = calculate_files_checksum_safe(iter->path());
+			if (!backup_checksum.empty()) {
+				break;
+			}
+			Sleep(100 * (attempt + 1));
+		}
+		if (backup_checksum != expected_checksum->second) {
+			std::wstring checksum_expected = ConvertToUtf16WS(expected_checksum->second);
+			std::wstring checksum_now = ConvertToUtf16WS(backup_checksum);
+			wlog_error(L"Backup file %s checksum mismatch before revert, expected %s, now %s", rel_path.c_str(), checksum_expected.c_str(),
+				   checksum_now.c_str());
+			error_count++;
+			continue;
+		}
+
+		revert_entries.push_back({iter->path(), to_path});
+	}
+
+	if (error_count > 0) {
+		m_keep_old_files = true;
+		wlog_warn(L"Revert verification failed before moving files. Keeping backup folder: %s", m_old_files_dir.c_str());
+		throw std::exception("Revert verification failed before moving files");
+	}
+
+	for (const auto &entry : revert_entries) {
+		const fs::path &to_path = entry.to_path;
+
 		fs::remove(to_path, ec);
 		if (ec) {
 			wlog_warn(L"Revert have failed to correctly remove changed file: %s ", to_path.c_str());
 			error_count++;
 		}
 
-		fs::rename(iter->path(), to_path, ec);
+		fs::rename(entry.from_path, to_path, ec);
 		if (ec) {
 			wlog_warn(L"Revert have failed to correctly move file back: %s ", to_path.c_str());
 			error_count++;
@@ -179,6 +270,8 @@ void FileUpdater::revert()
 		wlog_warn(L"Revert have failed to correctly revert some files. Fails: %i", error_count);
 		throw std::exception("Revert have failed to correctly revert some files");
 	}
+
+	m_keep_old_files = false;
 }
 
 bool FileUpdater::backup()
@@ -238,6 +331,8 @@ bool FileUpdater::is_local_files_changed()
 		if (!fs::exists(file.first, ec)) {
 			wlog_error(L"File %s does not exist after revert", file.first.c_str());
 			return true;
+		} else if (file.second.empty()) {
+			wlog_warn(L"File %s has no original checksum after revert; existence verified only", file.first.c_str());
 		} else {
 			std::string checksum = calculate_files_checksum_safe(file.first);
 			if (checksum != file.second) {

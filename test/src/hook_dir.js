@@ -46,7 +46,7 @@ function run(command) {
  * standard user, which is what makes the repair replace it rather than fix it
  * in place. */
 function make_untrusted(dir) {
-  return run(`takeown /f "${dir}" /d Y`) && run(`icacls "${dir}" /grant *S-1-5-32-545:(OI)(CI)F`);
+  return run(`takeown /f "${dir}"`) && run(`icacls "${dir}" /grant *S-1-5-32-545:(OI)(CI)F`);
 }
 
 /* mkdirpSync leaves every directory it creates owned by whoever is running
@@ -55,7 +55,7 @@ function make_untrusted(dir) {
  * and locked down the same way the shared hook directory itself is, so the
  * chain the parser demands is the chain this tree actually has. */
 function harden_ancestor(dir) {
-  return run(`takeown /f "${dir}" /a /d Y`) && run(`icacls "${dir}" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F`);
+  return run(`takeown /f "${dir}" /a`) && run(`icacls "${dir}" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F`);
 }
 
 /* A real synchronous sleep: ping to loopback replies immediately, so -w never
@@ -64,8 +64,9 @@ function sleep_ms(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/* Windows denies write access to a mapped image, so the open failing is the
- * signal that the holder is up and the directory can no longer be renamed. */
+/* Windows denies write access to a mapped image, so the open failing says the
+ * image is mapped. The loader maps it during startup whether or not the holder
+ * survives that, so this is a step towards readiness and not readiness itself. */
 function image_is_mapped(file) {
   let fd;
   try {
@@ -74,6 +75,39 @@ function image_is_mapped(file) {
     return true;
   }
   fs.closeSync(fd);
+  return false;
+}
+
+function still_running(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* The rename quarantine_hook_dir() performs. Asserted once the holder has
+ * settled, never polled: a rename that succeeds while the holder is still
+ * starting takes the directory out from under it and the holder exits, so
+ * polling this destroys the thing it is measuring. */
+function quarantine_is_refused() {
+  const aside = exports.hook_dir + '.holdprobe';
+
+  try {
+    fs.renameSync(exports.hook_dir, aside);
+  } catch (e) {
+    return true;
+  }
+
+  /* prepare() is called outside any try in run_test.js, so a throw here would
+   * take the whole suite down rather than fail the one test */
+  try {
+    fs.renameSync(aside, exports.hook_dir);
+  } catch (e) {
+    console.log('Could not put ' + aside + ' back: ' + e.message);
+  }
+
   return false;
 }
 
@@ -86,7 +120,14 @@ function image_is_mapped(file) {
  * Launched without a shell: cmd dispatches on the extension and will not run
  * a .dll, and even where it would, spawn returns once cmd starts rather than
  * once the image is mapped - the updater would then race the holder and the
- * blocked case would quietly test the successful one instead. */
+ * blocked case would quietly test the successful one instead.
+ *
+ * stdin has to be a pipe this process holds open. The blocker exits on stdin
+ * EOF, so 'ignore' hands it NUL and it is gone inside half a second - the
+ * pack's other blockers survive only because the default stdio gives them a
+ * pipe. That exit is invisible to the image probe, which the loader has
+ * already satisfied by then, so readiness is not settled until the holder is
+ * confirmed alive and the rename confirmed refused. */
 function start_holder(testinfo) {
   const blocker = path.join(__dirname, '..', 'resources', 'file_self_blocker_v1.exe');
   const held = path.join(exports.hook_dir, 'graphics-hook64.dll');
@@ -97,22 +138,36 @@ function start_holder(testinfo) {
     cwd: exports.hook_dir,
     detached: true,
     shell: false,
-    stdio: 'ignore',
+    stdio: ['pipe', 'ignore', 'ignore'],
   });
 
   holder_process.on('error', (e) => console.log('Hook directory holder failed to start: ' + e.message));
+  /* the pipe breaks when cleanup kills the holder, and an unhandled error on
+   * a stdio stream would take the suite down with it */
+  holder_process.stdin.on('error', () => {});
 
   for (let attempt = 0; attempt < 50; attempt++) {
-    if (image_is_mapped(held)) {
-      if (testinfo.more_log_output)
-        console.log('Hook directory holder pid = ' + holder_process.pid);
-      return true;
-    }
+    if (image_is_mapped(held))
+      break;
     sleep_ms(100);
   }
 
-  console.log('Hook directory holder never took hold of ' + held);
-  return false;
+  sleep_ms(750);
+
+  if (!still_running(holder_process.pid)) {
+    console.log('Hook directory holder exited during startup, so ' + held + ' is not held');
+    return false;
+  }
+
+  if (!quarantine_is_refused()) {
+    console.log('Hook directory holder never took hold of ' + held);
+    return false;
+  }
+
+  if (testinfo.more_log_output)
+    console.log('Hook directory holder pid = ' + holder_process.pid);
+
+  return true;
 }
 
 exports.prepare = function (testinfo) {
