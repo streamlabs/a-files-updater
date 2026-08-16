@@ -4,7 +4,7 @@ const test_config = require('./test_config.js');
 const fse = require('fs-extra')
 const path = require('path');
 
-const run_one_test = true;
+const run_one_test = false;
 
 async function run_tests() {
     let testinfo;
@@ -233,6 +233,25 @@ async function run_tests() {
         test_result = await run_test.test_update(testinfo);
         testinfo.corruptBackuped = true;
         testinfo.expectedResult = "filescorrupted"
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
+        testinfo = test_config.gettestinfo(" //untrusted graphics hook directory is secured ");
+        testinfo.hookDirTest = true;
+        testinfo.expectedHookDirSecured = true;
+        testinfo.expectedHookReport = "";
+        test_result = await run_test.test_update(testinfo);
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
+        testinfo = test_config.gettestinfo(" //graphics hook held open, update goes ahead without the repair ");
+        testinfo.hookDirTest = true;
+        testinfo.hookDirBlocked = true;
+        testinfo.expectedHookDirSecured = false;
+        testinfo.expectedHookReport = "HookQuarantineBlocked";
+        test_result = await run_test.test_update(testinfo);
         if (test_result != 0) {
             failed_test_names.push(testinfo.testName);
         }

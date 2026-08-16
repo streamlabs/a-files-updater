@@ -49,7 +49,7 @@ std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers);
  * effort, and separate from check_file_updatable: what fails there is a
  * directory rename rather than an open, and its ERROR_ACCESS_DENIED means a
  * holder rather than the unrecoverable failure that switch reads it as. */
-std::vector<blocker_info> get_hook_dir_blockers();
+std::vector<blocker_info> get_hook_dir_blockers(const fs::path &hook_dir);
 
 // write the blocker list to the log, which is attached to the crash report
 void log_blockers(const char *lead, const std::vector<blocker_info> &blockers);

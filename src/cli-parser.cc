@@ -2,8 +2,10 @@
 #include "argtable3.h"
 #include "fmt/format.h"
 #include "cli-parser.hpp"
+#include "hook-permissions.hpp"
 #include "logger/log.h"
 #include <clocale>
+#include <cwctype>
 #include "utils.hpp"
 
 /* Filesystem is implicitly included from cli-parser.h */
@@ -115,6 +117,23 @@ static fs::path fetch_path(const char *str, size_t length)
 	return result;
 }
 
+static std::wstring lowered(std::wstring text)
+{
+	for (wchar_t &c : text)
+		c = towlower(c);
+
+	return text;
+}
+
+/* True when `path` is `root` or sits below it, compared without case because
+ * Windows paths are. */
+static bool is_inside(const fs::path &path, const fs::path &root)
+{
+	const std::wstring prefix = lowered(root.wstring()) + L"\\";
+
+	return lowered(path.wstring()).rfind(prefix, 0) == 0;
+}
+
 static fs::path fetch_default_temp_dir()
 {
 	std::error_code ec{};
@@ -177,22 +196,24 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	struct arg_int *hook_prompt_arg =
 		arg_intn(NULL, "hook-prompt", "<hook-prompt>", 0, 1, "Ask the user to close whatever is holding the graphics hook directory open");
 
+	struct arg_str *hook_dir_arg = arg_str0(NULL, "hook-dir", "<directory>", "Graphics hook directory to secure, for tests. Defaults to the shared one");
+
 	struct arg_lit *restart_arg = arg_lit0(NULL, "restart-after-fail", "Start Streamlabs Desktop after update fail with option to skip update");
 
 	struct arg_str *details_arg = arg_str1("d", "details", "<file>", "Path to the file containing details of the update");
 
 	struct arg_end *end_arg = arg_end(255);
 
-	void *arg_table[] = {help_arg,    dump_args_arg, force_arg,       base_uri_arg,    app_dir_arg, exec_arg,    cwd_arg, temp_dir_arg,
-			     version_arg, pids_arg,      interactive_arg, hook_prompt_arg, restart_arg, details_arg, end_arg};
+	void *arg_table[] = {help_arg,    dump_args_arg, force_arg,       base_uri_arg,    app_dir_arg,  exec_arg,    cwd_arg,     temp_dir_arg,
+			     version_arg, pids_arg,      interactive_arg, hook_prompt_arg, hook_dir_arg, restart_arg, details_arg, end_arg};
 
 	const int arg_table_sz = sizeof(arg_table) / sizeof(arg_table[0]);
 
 	int num_errors = arg_parse(argc, argv, arg_table);
 
 	/* We need type information to dump parameters generically */
-	enum arg_type arg_table_types[arg_table_sz] = {ARG_LITERAL, ARG_LITERAL, ARG_LITERAL, ARG_STRING,  ARG_STRING,  ARG_STRING, ARG_STRING, ARG_STRING,
-						       ARG_STRING,  ARG_INTEGER, ARG_INTEGER, ARG_INTEGER, ARG_LITERAL, ARG_STRING, ARG_END};
+	enum arg_type arg_table_types[arg_table_sz] = {ARG_LITERAL, ARG_LITERAL, ARG_LITERAL, ARG_STRING,  ARG_STRING, ARG_STRING,  ARG_STRING, ARG_STRING,
+						       ARG_STRING,  ARG_INTEGER, ARG_INTEGER, ARG_INTEGER, ARG_STRING, ARG_LITERAL, ARG_STRING, ARG_END};
 
 	/* Here we assume that stdout is setup correctly, otherwise --help is pointless */
 	if (help_arg->count > 0) {
@@ -315,6 +336,54 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	if (hook_prompt_arg->count > 0) {
 		params->hook_prompt = hook_prompt_arg->ival[0];
+	}
+
+	params->hook_dir = programdata_hook_dir();
+
+	/* Only the tests pass this, and everything it points at gets renamed,
+	 * scheduled for deletion at the next reboot, and replaced by a
+	 * directory owned by Administrators - by a process running elevated,
+	 * from a command line composed by one that is not. So it is resolved
+	 * before it is judged, since ".." and a junction both spell a path that
+	 * is not the one it looks like, and held to the shape of the thing it
+	 * stands in for: the real leaf name, under the tests' own scratch root
+	 * rather than anywhere the argument happens to point. The scratch root
+	 * is read back through the same known-folder lookup programdata_hook_dir
+	 * uses, not the %ProgramData% environment variable, which the same
+	 * unelevated command line could have set to anything.
+	 *
+	 * Resolving early only catches a path dressed up to look like another
+	 * one; it says nothing about a component swapped out after this check
+	 * runs and before the elevated process acts on the string. Closing that
+	 * needs the same guarantee the shared directory's own ancestors get:
+	 * chain_trust demands every directory above the leaf is one only
+	 * Administrators can rename or replace, which an unelevated caller who
+	 * owns something under the scratch tree cannot arrange. Unlike the real
+	 * hook directory, refusing costs nothing here, so an untrusted ancestor
+	 * fails the argument outright rather than being reported and left. */
+	if (hook_dir_arg->count > 0) {
+		std::error_code hook_ec;
+		const fs::path requested = fetch_path(hook_dir_arg->sval[0], strlen(hook_dir_arg->sval[0]));
+		const fs::path candidate = fs::weakly_canonical(requested, hook_ec).make_preferred();
+		const fs::path program_data = programdata_hook_dir().parent_path();
+		const fs::path scratch_root = program_data / L"slobs-hook-tests";
+
+		const bool resolvable = !hook_ec && !program_data.empty();
+		const bool named_right = resolvable && candidate.filename() == L"obs-studio-hook";
+		const bool below_root = resolvable && candidate.has_relative_path() && candidate.parent_path().has_relative_path();
+		const bool in_scratch_tree = resolvable && is_inside(candidate, scratch_root);
+		const bool ancestors_trusted = resolvable && chain_trust(candidate).ancestors;
+
+		if (!resolvable || !named_right || !below_root || !in_scratch_tree || !ancestors_trusted || is_system_folder(candidate) ||
+		    is_system_folder(candidate.parent_path())) {
+			log_fatal("Refusing --hook-dir %s: it must be an obs-studio-hook directory under %%ProgramData%%\\slobs-hook-tests, reached only "
+				  "through directories Administrators own",
+				  candidate.u8string().c_str());
+			success = false;
+		} else {
+			params->hook_dir = candidate;
+			log_warn("Graphics hook directory overridden to %s", candidate.u8string().c_str());
+		}
 	}
 
 	if (restart_arg->count > 0) {

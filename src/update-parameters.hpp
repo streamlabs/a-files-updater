@@ -15,6 +15,9 @@ struct update_parameters {
 
 	fs::path temp_dir;
 	fs::path app_dir;
+	/* Resolved once at startup: %ProgramData%\obs-studio-hook unless
+	 * --hook-dir moved it, which only the tests do. */
+	fs::path hook_dir;
 	std::string exec;
 	std::string exec_no_update;
 	std::string exec_cwd;
