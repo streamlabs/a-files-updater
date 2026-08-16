@@ -4,6 +4,7 @@
 #include "cli-parser.hpp"
 #include "hook-permissions.hpp"
 #include "logger/log.h"
+#include "updater-storage.hpp"
 #include <clocale>
 #include <cwctype>
 #include "utils.hpp"
@@ -134,34 +135,6 @@ static bool is_inside(const fs::path &path, const fs::path &root)
 	return lowered(path.wstring()).rfind(prefix, 0) == 0;
 }
 
-static fs::path fetch_default_temp_dir()
-{
-	std::error_code ec{};
-	fs::path temp_dir = fs::temp_directory_path(ec);
-
-	if (!ec) {
-		temp_dir /= "slobs-updater";
-
-		time_t t = time(nullptr);
-		struct tm *lt = localtime(&t);
-
-		std::srand(static_cast<unsigned int>(time(nullptr)));
-
-		char buf[24];
-		sprintf(buf, "%04i%03i%02i%02i%02i%c%c\0", lt->tm_year + 1900, lt->tm_yday, lt->tm_hour, lt->tm_min, lt->tm_sec, 'a' + rand() % 20,
-			'a' + rand() % 20);
-
-		temp_dir /= buf;
-
-		fs::create_directories(temp_dir, ec);
-	} else {
-		log_info("Failed to get temporary directory from system: %d %s", ec.value(), ec.message().c_str());
-
-		temp_dir = "";
-	}
-	return temp_dir;
-}
-
 bool su_parse_command_line(int argc, char **argv, struct update_parameters *params)
 {
 	std::error_code ec{};
@@ -175,7 +148,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	struct arg_lit *dump_args_arg = arg_lit0(NULL, "dump-args", "Print all argument values, including this one");
 
-	struct arg_lit *force_arg = arg_lit0(NULL, "force-temp", "Force use temporary directory even if it exists");
+	struct arg_lit *force_arg = arg_lit0(NULL, "force-temp", "Reuse an existing temporary directory after verifying its permissions");
 
 	struct arg_str *base_uri_arg = arg_str1("b", "base-url", "<url>", "The base URL to fetch updates from");
 
@@ -185,7 +158,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	struct arg_str *cwd_arg = arg_str0("c", "cwd", "<working directory>", "The working directory of which to start the application in");
 
-	struct arg_str *temp_dir_arg = arg_str0("t", "temp-dir", "<directory>", "The directory to place temporary files to be deleted later");
+	struct arg_str *temp_dir_arg = arg_str0("t", "temp-dir", "<directory>", "A trusted directory for staged and backup files");
 
 	struct arg_str *version_arg = arg_str1("v", "version", "<version>", "The version of which to update to");
 
@@ -227,10 +200,14 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	if (temp_dir_arg->count > 0) {
 		params->temp_dir = fetch_path(temp_dir_arg->sval[0], strlen(temp_dir_arg->sval[0]));
+		if (!prepare_updater_temp_dir(params->temp_dir, force_arg->count > 0)) {
+			success = false;
+			goto parse_error;
+		}
 	} else {
 		log_info("Temporary directory not provided.");
 
-		params->temp_dir = fetch_default_temp_dir();
+		params->temp_dir = create_default_updater_temp_dir();
 
 		if (params->temp_dir.empty()) {
 			log_info("Generated temporary directory failed");
@@ -317,13 +294,6 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	if (params->temp_dir.empty()) {
 		log_fatal("Invalid path given for temp_dir");
 		success = false;
-	} else if (fs::exists(params->temp_dir, ec)) {
-		if (force_arg->count == 0) {
-			log_fatal("Temporary directory already exists.");
-			success = false;
-		} else {
-			log_warn("Forcing temporary directory!");
-		}
 	}
 
 	params->pids = make_vector_from_arg(pids_arg);
@@ -392,8 +362,6 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	if (!success)
 		goto parse_error;
-
-	fs::create_directory(params->temp_dir, ec);
 
 	success = true;
 

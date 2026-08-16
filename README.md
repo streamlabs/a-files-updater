@@ -12,7 +12,8 @@
 6. **Installs packages** — can download and silently run installers (e.g., VC++ Redistributable) as prerequisites
 7. **Copies updated files** — replaces the old app files
 8. **Secures the graphics hook directory** — hardens permissions on `%ProgramData%\obs-studio-hook` after every update (see below)
-9. **Launches the updated app** — or falls back to launching the old app if the update failed
+9. **Uses trusted update storage** — stages downloads and rollback copies below an Administrators-owned `%ProgramData%\slobs-updater` directory and verifies its owner, DACL, reparse status, and ancestors before every run
+10. **Launches the updated app** — or falls back to launching the old app if the update failed
 
 **Notable details:**
 - Built with C++17, uses Boost (locale, iostreams, asio, beast), OpenSSL, and zlib

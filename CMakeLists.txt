@@ -174,6 +174,7 @@ add_executable(hook-dir-tests
 	test/native/hook-dir-tests.cc
 	test/native/stub-reporter.cc
 	src/hook-permissions.cc
+	src/updater-storage.cc
 	src/update-blockers.cc
 	src/logger/log.c
 )

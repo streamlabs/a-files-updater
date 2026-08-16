@@ -25,8 +25,9 @@
 #include <vector>
 
 #include "hook-permissions.hpp"
-#include "update-blockers.hpp"
 #include "stub-reporter.hpp"
+#include "update-blockers.hpp"
+#include "updater-storage.hpp"
 
 namespace {
 
@@ -143,6 +144,16 @@ void check_hardened(const fs::path &path, int line)
 	check(sddl.find(L"FA;;;BU") == std::wstring::npos, "Users are not granted full access", line);
 }
 
+void check_updater_hardened(const fs::path &path, int line)
+{
+	const std::wstring sddl = read_sddl(path);
+
+	check(sddl.rfind(L"O:BA", 0) == 0, "owner is Administrators", line);
+	check(sddl.find(L"PAI") != std::wstring::npos, "DACL is protected from inheritance", line);
+	check(sddl.find(L";;;BU") == std::wstring::npos, "Users have no access", line);
+	check(sddl.find(current_user_sid()) == std::wstring::npos, "current user has no ACE", line);
+}
+
 /* Owned by the user running the tests rather than by Administrators, and
  * writable by BUILTIN\Users - the 1.21-era shape the repair exists for. */
 bool make_untrusted(const fs::path &dir)
@@ -237,6 +248,71 @@ struct Case {
 };
 
 /* ------------------------------------------------------------------ cases */
+
+void updater_directory_is_created_and_verified(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_is_created_and_verified");
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	check_updater_hardened(temp_dir, __LINE__);
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, false));
+	CHECK(prepare_updater_temp_dir(temp_dir, true));
+}
+
+void untrusted_updater_directory_is_not_adopted(const fs::path &scratch)
+{
+	Case c(scratch, "untrusted_updater_directory_is_not_adopted");
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(make_untrusted(temp_dir));
+	write_file(temp_dir / L"planted.dll", "theirs");
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, true));
+	CHECK(file_exists(temp_dir / L"planted.dll"));
+	CHECK(read_sddl(temp_dir).find(L"FA;;;BU") != std::wstring::npos);
+}
+
+void updater_directory_needs_a_trusted_parent(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_needs_a_trusted_parent");
+	const fs::path loose = c.root / L"loose";
+	const fs::path temp_dir = loose / L"run";
+
+	CHECK(make_untrusted(loose));
+	CHECK(!prepare_updater_temp_dir(temp_dir, false));
+	CHECK(!file_exists(temp_dir));
+}
+
+void updater_directory_rejects_non_normal_paths(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_non_normal_paths");
+	const fs::path temp_dir = c.root / L"missing" / L".." / L"run";
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, false));
+	CHECK(!file_exists(c.root / L"run"));
+}
+
+void updater_directory_rejects_a_reparse_point(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_a_reparse_point");
+	const fs::path elsewhere = c.root / L"elsewhere";
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(make_trusted(elsewhere));
+	write_file(elsewhere / L"planted.dll", "theirs");
+
+	std::error_code ec;
+	fs::create_directory_symlink(elsewhere, temp_dir, ec);
+	if (ec) {
+		printf("      skipped: could not create a junction (%d)\n", ec.value());
+		return;
+	}
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, true));
+	CHECK(file_exists(elsewhere / L"planted.dll"));
+}
 
 void untrusted_directory_is_replaced(const fs::path &scratch)
 {
@@ -640,6 +716,11 @@ int wmain(int argc, wchar_t **argv)
 		return 2;
 	}
 
+	updater_directory_is_created_and_verified(scratch);
+	untrusted_updater_directory_is_not_adopted(scratch);
+	updater_directory_needs_a_trusted_parent(scratch);
+	updater_directory_rejects_non_normal_paths(scratch);
+	updater_directory_rejects_a_reparse_point(scratch);
 	untrusted_directory_is_replaced(scratch);
 	secured_directory_is_left_alone(scratch);
 	open_handle_blocks_quarantine(scratch);
