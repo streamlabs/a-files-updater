@@ -248,6 +248,17 @@ bool quarantine_exists(const fs::path &dir)
 	return false;
 }
 
+bool updater_log_sidecar_exists(const fs::path &dir)
+{
+	std::error_code ec;
+	for (const auto &entry : fs::directory_iterator(dir.parent_path(), ec)) {
+		if (entry.path().filename().wstring().rfind(L".updater-log-", 0) == 0)
+			return true;
+	}
+
+	return false;
+}
+
 bool file_exists(const fs::path &path)
 {
 	std::error_code ec;
@@ -475,8 +486,10 @@ void owned_updater_directory_is_cleaned(const fs::path &scratch)
 
 	CHECK(prepare_updater_temp_dir(temp_dir, false));
 	write_file(temp_dir / L"payload.dll", "payload");
+	write_file(temp_dir / L"slobs-updater.log", "diagnostic log");
 	CHECK(cleanup_updater_temp_dir(temp_dir));
 	CHECK(!file_exists(temp_dir));
+	CHECK(!updater_log_sidecar_exists(temp_dir));
 }
 
 void failed_cleanup_preserves_updater_log(const fs::path &scratch)
@@ -500,6 +513,32 @@ void failed_cleanup_preserves_updater_log(const fs::path &scratch)
 	CHECK(file_exists(log));
 	CHECK(read_file(log) == "diagnostic log");
 	CHECK(diagnostics.failure.find(L"updater log retained at") != std::wstring::npos);
+
+	CloseHandle(held);
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
+void open_directory_handle_blocks_final_cleanup_without_a_sidecar(const fs::path &scratch)
+{
+	Case c(scratch, "open_directory_handle_blocks_final_cleanup_without_a_sidecar");
+	const fs::path temp_dir = c.root / L"run";
+	const fs::path log = temp_dir / L"slobs-updater.log";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	write_file(log, "diagnostic log");
+	HANDLE held =
+		CreateFileW(temp_dir.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	if (held == INVALID_HANDLE_VALUE) {
+		CHECK(false);
+		return;
+	}
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(!cleanup_updater_temp_dir(temp_dir, true, &diagnostics));
+	CHECK(file_exists(temp_dir));
+	CHECK(!file_exists(log));
+	CHECK(!updater_log_sidecar_exists(temp_dir));
 
 	CloseHandle(held);
 	CHECK(cleanup_updater_temp_dir(temp_dir));
@@ -1068,6 +1107,7 @@ int wmain(int argc, wchar_t **argv)
 	updater_directory_rejects_a_file(scratch);
 	owned_updater_directory_is_cleaned(scratch);
 	failed_cleanup_preserves_updater_log(scratch);
+	open_directory_handle_blocks_final_cleanup_without_a_sidecar(scratch);
 	vanished_updater_directory_is_already_clean(scratch);
 	updater_run_lock_can_be_removed(scratch);
 	preview_ancestor_policy_is_used_for_cleanup(scratch);

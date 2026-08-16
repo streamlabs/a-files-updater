@@ -341,52 +341,6 @@ ClaimResult claim_updater_run(const fs::path &run, fs::path &claimed, std::wstri
 	return ClaimResult::Failed;
 }
 
-bool hold_updater_log(const fs::path &dir, fs::path &held, UpdaterStorageDiagnostics *diagnostics)
-{
-	const fs::path log = dir / kUpdaterLogName;
-	const DWORD attributes = GetFileAttributesW(log.c_str());
-	if (attributes == INVALID_FILE_ATTRIBUTES) {
-		const DWORD error = GetLastError();
-		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
-			return true;
-		set_failure(diagnostics, L"Could not inspect updater log " + log.wstring() + L": " + format_hex32(error));
-		return false;
-	}
-
-	for (int attempt = 0; attempt < 8; attempt++) {
-		const std::wstring suffix = security_random_hex(4);
-		if (suffix.empty()) {
-			set_failure(diagnostics, L"Could not preserve updater log: no randomness available");
-			return false;
-		}
-
-		held = dir.parent_path() / (L".updater-log-" + suffix);
-		if (MoveFileExW(log.c_str(), held.c_str(), MOVEFILE_WRITE_THROUGH))
-			return true;
-
-		const DWORD error = GetLastError();
-		if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) {
-			set_failure(diagnostics, L"Could not preserve updater log " + log.wstring() + L": " + format_hex32(error));
-			return false;
-		}
-	}
-
-	set_failure(diagnostics, L"Could not find a unique name for the preserved updater log");
-	return false;
-}
-
-fs::path restore_updater_log(const fs::path &dir, const fs::path &held)
-{
-	if (held.empty())
-		return {};
-
-	const fs::path original = dir / kUpdaterLogName;
-	if (MoveFileExW(held.c_str(), original.c_str(), MOVEFILE_WRITE_THROUGH))
-		return original;
-
-	return held;
-}
-
 } // namespace
 
 fs::path programdata_updater_root()
@@ -639,13 +593,20 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		return false;
 	}
 
+	const fs::path log = dir / kUpdaterLogName;
 	std::vector<fs::path> children;
 	std::error_code ec;
-	for (const fs::directory_entry &entry : fs::directory_iterator(dir, ec)) {
+	fs::directory_iterator iter(dir, ec);
+	const fs::directory_iterator end;
+	while (!ec && iter != end) {
+		const fs::directory_entry &entry = *iter;
 		if (entry.path().filename() != kUpdaterLogName)
 			children.push_back(entry.path());
+		iter.increment(ec);
 	}
 	if (ec) {
+		if (missing())
+			return true;
 		set_failure(diagnostics, L"Failed to enumerate updater run " + dir.wstring() + L": " + format_hex32(ec.value()));
 		return false;
 	}
@@ -655,34 +616,28 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		fs::remove_all(child, ec);
 		if (ec) {
 			std::wstring reason = L"Failed to clean updater run " + dir.wstring() + L": " + format_hex32(ec.value());
-			if (GetFileAttributesW((dir / kUpdaterLogName).c_str()) != INVALID_FILE_ATTRIBUTES)
-				reason += L"; updater log retained at " + (dir / kUpdaterLogName).wstring();
+			if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+				reason += L"; updater log retained at " + log.wstring();
 			set_failure(diagnostics, reason);
 			return false;
 		}
 	}
 
-	fs::path held_log;
-	if (!hold_updater_log(dir, held_log, diagnostics))
-		return false;
+	if (!DeleteFileW(log.c_str())) {
+		const DWORD error = GetLastError();
+		if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+			set_failure(diagnostics, L"Failed to remove updater log " + log.wstring() + L": " + format_hex32(error) +
+							 L"; updater log retained at " + log.wstring());
+			return false;
+		}
+	}
 
 	if (!RemoveDirectoryW(dir.c_str())) {
 		const DWORD error = GetLastError();
-		const fs::path retained_log = restore_updater_log(dir, held_log);
-		std::wstring reason = L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error);
-		if (!retained_log.empty())
-			reason += L"; updater log retained at " + retained_log.wstring();
-		set_failure(diagnostics, reason);
+		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+			return true;
+		set_failure(diagnostics, L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error));
 		return false;
-	}
-
-	if (!held_log.empty()) {
-		fs::remove(held_log, ec);
-		if (ec) {
-			set_failure(diagnostics, L"Updater run was cleaned, but its preserved log could not be removed from " + held_log.wstring() + L": " +
-							 format_hex32(ec.value()));
-			return false;
-		}
 	}
 	return true;
 }

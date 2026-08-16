@@ -13,12 +13,16 @@ bool reserved_device_name(const std::wstring &component)
 {
 	const size_t extension = component.find(L'.');
 	std::wstring base = component.substr(0, extension);
+	while (!base.empty() && (base.back() == L' ' || base.back() == L'.'))
+		base.pop_back();
 	std::transform(base.begin(), base.end(), base.begin(), [](wchar_t c) { return static_cast<wchar_t>(towupper(c)); });
 
-	if (base == L"CON" || base == L"PRN" || base == L"AUX" || base == L"NUL")
+	if (base == L"CON" || base == L"PRN" || base == L"AUX" || base == L"NUL" || base == L"CONIN$" || base == L"CONOUT$")
 		return true;
-	if (base.size() == 4 && (base.rfind(L"COM", 0) == 0 || base.rfind(L"LPT", 0) == 0))
-		return base[3] >= L'1' && base[3] <= L'9';
+	if (base.size() == 4 && (base.rfind(L"COM", 0) == 0 || base.rfind(L"LPT", 0) == 0)) {
+		const wchar_t suffix = base[3];
+		return (suffix >= L'1' && suffix <= L'9') || suffix == L'\u00b9' || suffix == L'\u00b2' || suffix == L'\u00b3';
+	}
 
 	return false;
 }
@@ -74,12 +78,14 @@ bool normalize_manifest_path(std::string_view input, std::string &normalized, st
 			error = "path is rooted, absolute, or does not name a file";
 			return false;
 		}
+		fs::path canonical;
 		for (const fs::path &component : path) {
 			if (!valid_component(component, error))
 				return false;
+			canonical /= component;
 		}
 
-		normalized = path.u8string();
+		normalized = canonical.u8string();
 		return true;
 	} catch (const std::exception &) {
 		error = "path is not valid UTF-8";
@@ -93,24 +99,24 @@ bool parse_update_manifest(const std::string &content, manifest_map_t &output, s
 	std::vector<std::pair<fs::path, size_t>> parsed_paths;
 	error.clear();
 
-	if (content.empty()) {
+	std::string_view document(content);
+	constexpr std::string_view utf8_bom("\xef\xbb\xbf", 3);
+	if (document.substr(0, utf8_bom.size()) == utf8_bom)
+		document.remove_prefix(utf8_bom.size());
+
+	if (document.empty()) {
 		error = "manifest is empty";
 		return false;
 	}
 
 	size_t offset = 0;
 	size_t line_number = 1;
-	while (offset < content.size()) {
-		const size_t newline = content.find('\n', offset);
-		if (newline == std::string::npos) {
-			error = "line " + std::to_string(line_number) + " is incomplete";
-			return false;
-		}
-
-		size_t line_end = newline;
-		if (line_end > offset && content[line_end - 1] == '\r')
+	while (offset < document.size()) {
+		const size_t newline = document.find('\n', offset);
+		size_t line_end = newline == std::string_view::npos ? document.size() : newline;
+		if (line_end > offset && document[line_end - 1] == '\r')
 			line_end--;
-		const std::string_view line(content.data() + offset, line_end - offset);
+		const std::string_view line(document.data() + offset, line_end - offset);
 		if (line.size() < 66 || line[64] != ' ') {
 			error = "line " + std::to_string(line_number) + " does not contain a SHA-256 hash and path";
 			return false;
@@ -133,7 +139,7 @@ bool parse_update_manifest(const std::string &content, manifest_map_t &output, s
 		manifest_entry_t entry(checksum);
 		parsed.emplace(normalized, std::move(entry));
 		parsed_paths.emplace_back(fs::u8path(normalized), line_number);
-		offset = newline + 1;
+		offset = newline == std::string_view::npos ? document.size() : newline + 1;
 		line_number++;
 	}
 

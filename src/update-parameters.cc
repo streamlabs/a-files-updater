@@ -23,10 +23,8 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 	if (!owns_temp_dir || retain_temp_dir || temp_dir.empty())
 		return true;
 
-	if (!cleanup_updater_temp_dir(temp_dir, enforce_temp_ancestors, diagnostics)) {
-		retain_temp_dir = true;
+	if (!cleanup_updater_temp_dir(temp_dir, enforce_temp_ancestors, diagnostics))
 		return false;
-	}
 
 	owns_temp_dir = false;
 	cleanup_temp_dir_lock = false;
@@ -35,5 +33,9 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 
 update_parameters::~update_parameters()
 {
-	cleanup_temp_dir();
+	try {
+		cleanup_temp_dir();
+	} catch (...) {
+		wlog_warn(L"Unexpected exception while cleaning updater storage during shutdown");
+	}
 }

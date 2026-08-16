@@ -238,6 +238,18 @@ void update_client::handle_manifest_download_canceled(std::shared_ptr<manifest_r
 	handle_network_error(download_abort_error, download_abort_message);
 }
 
+void update_client::handle_manifest_content_error(const std::string &str)
+{
+	std::lock_guard<std::mutex> lock(handle_error_mutex);
+	update_download_aborted = true;
+
+	const std::string error = boost::locale::translate(
+		"Streamlabs Desktop received invalid update information and will launch the current version instead.\n\nThe update will try again later. If this issue persists then please download a new installer from www.streamlabs.com");
+	client_events->error(error, "UpdateFailure", "Invalid update manifest");
+	log_error("%s", str.c_str());
+	reset_work_threads_guards();
+}
+
 void update_client::handle_resolve(const boost::system::error_code &error, resolver_type::results_type results)
 {
 	domain_resolve_timeout.cancel();
@@ -1107,12 +1119,12 @@ void update_client::start_downloading_files()
 
 void update_client::handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content)
 {
+	(void)request_ctx;
 	manifest_map_t parsed;
 	std::string parse_error;
 	if (!parse_update_manifest(manifest_content, parsed, parse_error)) {
 		const std::string message = "Invalid update manifest: " + parse_error;
-		log_error("%s", message.c_str());
-		handle_manifest_download_error(request_ctx, boost::system::errc::make_error_code(boost::system::errc::illegal_byte_sequence), message);
+		handle_manifest_content_error(message);
 		return;
 	}
 
