@@ -189,6 +189,7 @@ void update_client::handle_file_download_error(std::shared_ptr<file_request<http
 	} else {
 		auto new_request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, request_ctx->target, request_ctx->worker_id);
 		new_request_ctx->retries = request_ctx->retries + 1;
+		new_request_ctx->expected_hash = request_ctx->expected_hash;
 
 		Sleep(new_request_ctx->retries * 100);
 
@@ -1204,6 +1205,7 @@ update_file_t::update_file_t(const fs::path &file_path) : file_path(file_path), 
 void update_client::handle_file_result(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, update_file_t *file_ctx, int index)
 {
 	auto &filter = file_ctx->checksum_filter;
+	std::string error_message;
 
 	try {
 		file_ctx->output_chain.reset();
@@ -1212,13 +1214,21 @@ void update_client::handle_file_result(std::shared_ptr<file_request<http::dynami
 
 		const std::string &expected = request_ctx->expected_hash;
 		if (!expected.empty() && hex_digest != expected) {
-			log_error("Downloaded file checksum mismatch for %s, expected %s, got %s", request_ctx->target.c_str(), expected.c_str(),
-				  hex_digest.c_str());
+			error_message = "Downloaded file checksum mismatch for " + request_ctx->target + ", expected " + expected + ", got " + hex_digest;
+			log_error("%s", error_message.c_str());
 		}
+	} catch (const std::exception &e) {
+		error_message = "Failed to finalize downloaded file " + request_ctx->target + ": " + e.what();
 	} catch (...) {
+		error_message = "Failed to finalize downloaded file " + request_ctx->target;
 	}
 
 	delete file_ctx;
+
+	if (!error_message.empty()) {
+		handle_file_download_error(request_ctx, boost::system::errc::make_error_code(boost::system::errc::illegal_byte_sequence), error_message);
+		return;
+	}
 
 	next_manifest_entry(index);
 }
