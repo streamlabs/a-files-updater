@@ -123,9 +123,15 @@ bool prepare_updater_temp_dir(const fs::path &dir, bool allow_existing)
 		return false;
 	}
 
-	const fs::path parent = dir.parent_path();
-	if (!trusted_directory(parent)) {
-		wlog_warn(L"Refusing to create updater directory below untrusted parent %s", parent.c_str());
+	/* The standard ProgramData DACL lets Users create sibling directories,
+	 * but not rename or delete existing ones. That is safe here: creation
+	 * applies the final protected DACL atomically, and ERROR_ALREADY_EXISTS
+	 * is refused rather than adopted. Judge the parent as an ancestor, where
+	 * create-child is therefore not a replacement capability. */
+	const TrustReport destination = chain_trust(dir);
+	if (!destination.ancestors) {
+		wlog_warn(L"Refusing to create updater directory %s: ancestor %s %s", dir.c_str(), destination.ancestor.c_str(),
+			  destination.ancestor_why.c_str());
 		return false;
 	}
 

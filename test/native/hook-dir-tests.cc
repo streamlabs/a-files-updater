@@ -173,6 +173,16 @@ bool make_trusted(const fs::path &dir)
 	return apply_sddl(dir, L"O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FRFX;;;BU)");
 }
 
+bool make_creation_only_parent(const fs::path &dir)
+{
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+
+	/* ProgramData's relevant shape: Users may add a subdirectory (0x4), but
+	 * cannot delete/rename existing children or rewrite this DACL. */
+	return apply_sddl(dir, L"O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;CI;0x4;;;BU)");
+}
+
 void write_file(const fs::path &path, const char *contents)
 {
 	FILE *file = nullptr;
@@ -283,6 +293,17 @@ void updater_directory_needs_a_trusted_parent(const fs::path &scratch)
 	CHECK(make_untrusted(loose));
 	CHECK(!prepare_updater_temp_dir(temp_dir, false));
 	CHECK(!file_exists(temp_dir));
+}
+
+void updater_directory_accepts_a_creation_only_parent(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_accepts_a_creation_only_parent");
+	const fs::path parent = c.root / L"programdata-shape";
+	const fs::path temp_dir = parent / L"run";
+
+	CHECK(make_creation_only_parent(parent));
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	check_updater_hardened(temp_dir, __LINE__);
 }
 
 void updater_directory_rejects_non_normal_paths(const fs::path &scratch)
@@ -719,6 +740,7 @@ int wmain(int argc, wchar_t **argv)
 	updater_directory_is_created_and_verified(scratch);
 	untrusted_updater_directory_is_not_adopted(scratch);
 	updater_directory_needs_a_trusted_parent(scratch);
+	updater_directory_accepts_a_creation_only_parent(scratch);
 	updater_directory_rejects_non_normal_paths(scratch);
 	updater_directory_rejects_a_reparse_point(scratch);
 	untrusted_directory_is_replaced(scratch);
