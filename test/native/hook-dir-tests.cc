@@ -17,6 +17,7 @@
 #include <aclapi.h>
 #include <sddl.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -25,8 +26,9 @@
 #include <vector>
 
 #include "hook-permissions.hpp"
-#include "update-blockers.hpp"
 #include "stub-reporter.hpp"
+#include "update-blockers.hpp"
+#include "updater-storage.hpp"
 
 namespace {
 
@@ -143,6 +145,16 @@ void check_hardened(const fs::path &path, int line)
 	check(sddl.find(L"FA;;;BU") == std::wstring::npos, "Users are not granted full access", line);
 }
 
+void check_updater_hardened(const fs::path &path, int line)
+{
+	const std::wstring sddl = read_sddl(path);
+
+	check(sddl.rfind(L"O:BA", 0) == 0, "owner is Administrators", line);
+	check(sddl.find(L"D:P") != std::wstring::npos, "DACL is protected from inheritance", line);
+	check(sddl.find(L";;;BU") == std::wstring::npos, "Users have no access", line);
+	check(sddl.find(current_user_sid()) == std::wstring::npos, "current user has no ACE", line);
+}
+
 /* Owned by the user running the tests rather than by Administrators, and
  * writable by BUILTIN\Users - the 1.21-era shape the repair exists for. */
 bool make_untrusted(const fs::path &dir)
@@ -160,6 +172,16 @@ bool make_trusted(const fs::path &dir)
 	fs::create_directories(dir, ec);
 
 	return apply_sddl(dir, L"O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FRFX;;;BU)");
+}
+
+bool make_creation_only_parent(const fs::path &dir)
+{
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+
+	/* ProgramData's relevant shape: Users may add a subdirectory (0x4), but
+	 * cannot delete/rename existing children or rewrite this DACL. */
+	return apply_sddl(dir, L"O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;CI;0x4;;;BU)");
 }
 
 void write_file(const fs::path &path, const char *contents)
@@ -237,6 +259,324 @@ struct Case {
 };
 
 /* ------------------------------------------------------------------ cases */
+
+void updater_directory_is_created_and_verified(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_is_created_and_verified");
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	check_updater_hardened(temp_dir, __LINE__);
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, false));
+	CHECK(prepare_updater_temp_dir(temp_dir, true));
+}
+
+void untrusted_updater_directory_is_not_adopted(const fs::path &scratch)
+{
+	Case c(scratch, "untrusted_updater_directory_is_not_adopted");
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(make_untrusted(temp_dir));
+	write_file(temp_dir / L"planted.dll", "theirs");
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, true));
+	CHECK(file_exists(temp_dir / L"planted.dll"));
+	CHECK(read_sddl(temp_dir).find(L"FA;;;BU") != std::wstring::npos);
+}
+
+void updater_directory_requires_the_updater_acl(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_requires_the_updater_acl");
+	const fs::path missing_admin = c.root / L"missing-admin";
+	const fs::path extra_reader = c.root / L"extra-reader";
+
+	CHECK(prepare_updater_temp_dir(missing_admin, false));
+	CHECK(apply_sddl(missing_admin, L"O:BAD:PAI(A;OICI;FA;;;SY)"));
+	CHECK(!prepare_updater_temp_dir(missing_admin, true));
+
+	CHECK(prepare_updater_temp_dir(extra_reader, false));
+	CHECK(apply_sddl(extra_reader, L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)"));
+	CHECK(!prepare_updater_temp_dir(extra_reader, true));
+}
+
+void updater_directory_needs_a_trusted_parent(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_needs_a_trusted_parent");
+	const fs::path loose = c.root / L"loose";
+	const fs::path temp_dir = loose / L"run";
+
+	CHECK(make_untrusted(loose));
+	CHECK(!prepare_updater_temp_dir(temp_dir, false));
+	CHECK(!file_exists(temp_dir));
+}
+
+void updater_directory_accepts_a_creation_only_parent(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_accepts_a_creation_only_parent");
+	const fs::path parent = c.root / L"programdata-shape";
+	const fs::path temp_dir = parent / L"run";
+
+	CHECK(make_creation_only_parent(parent));
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	check_updater_hardened(temp_dir, __LINE__);
+}
+
+void updater_directory_rejects_non_normal_paths(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_non_normal_paths");
+	const fs::path temp_dir = c.root / L"missing" / L".." / L"run";
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, false));
+	CHECK(!file_exists(c.root / L"run"));
+}
+
+void updater_directory_rejects_reserved_prune_names(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_reserved_prune_names");
+	const fs::path claimed = c.root / L".prune-00000000000000000000000000000001";
+
+	CHECK(!prepare_updater_temp_dir(claimed, false));
+	CHECK(!file_exists(claimed));
+}
+
+void updater_directory_rejects_a_reparse_point(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_a_reparse_point");
+	const fs::path elsewhere = c.root / L"elsewhere";
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(make_trusted(elsewhere));
+	write_file(elsewhere / L"planted.dll", "theirs");
+
+	std::error_code ec;
+	fs::create_directory_symlink(elsewhere, temp_dir, ec);
+	if (ec) {
+		printf("      skipped: could not create a junction (%d)\n", ec.value());
+		return;
+	}
+
+	CHECK(!prepare_updater_temp_dir(temp_dir, true));
+	CHECK(file_exists(elsewhere / L"planted.dll"));
+}
+
+void updater_root_is_resolved_from_programdata(const fs::path &scratch)
+{
+	Case c(scratch, "updater_root_is_resolved_from_programdata");
+	CHECK(programdata_updater_root() == programdata_hook_dir().parent_path() / L"slobs-updater");
+}
+
+void untrusted_updater_root_is_replaced(const fs::path &scratch)
+{
+	Case c(scratch, "untrusted_updater_root_is_replaced");
+	const fs::path root = c.root / L"updater-root";
+
+	CHECK(make_untrusted(root));
+	write_file(root / L"planted.dll", "theirs");
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(prepare_updater_root(root, &diagnostics));
+	CHECK(diagnostics.root_replaced);
+	CHECK(!diagnostics.root_replaced_reason.empty());
+	check_updater_hardened(root, __LINE__);
+	CHECK(!file_exists(root / L"planted.dll"));
+	CHECK(quarantine_exists(root));
+}
+
+void updater_root_replaces_a_file(const fs::path &scratch)
+{
+	Case c(scratch, "updater_root_replaces_a_file");
+	const fs::path root = c.root / L"updater-root";
+
+	write_file(root, "squatted");
+	CHECK(prepare_updater_root(root));
+	check_updater_hardened(root, __LINE__);
+	CHECK(!quarantine_exists(root));
+}
+
+void blocked_updater_root_quarantine_is_distinct(const fs::path &scratch)
+{
+	Case c(scratch, "blocked_updater_root_quarantine_is_distinct");
+	const fs::path root = c.root / L"updater-root";
+
+	CHECK(make_untrusted(root));
+	HANDLE held = CreateFileW(root.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	if (held == INVALID_HANDLE_VALUE) {
+		CHECK(false);
+		return;
+	}
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(!prepare_updater_root(root, &diagnostics));
+	CHECK(diagnostics.failure_category == "UpdaterStorageQuarantineBlocked");
+	CloseHandle(held);
+}
+
+void updater_directory_rejects_a_file(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_a_file");
+	const fs::path temp_dir = c.root / L"run";
+
+	write_file(temp_dir, "not a directory");
+	CHECK(!prepare_updater_temp_dir(temp_dir, true));
+	CHECK(file_exists(temp_dir));
+}
+
+void owned_updater_directory_is_cleaned(const fs::path &scratch)
+{
+	Case c(scratch, "owned_updater_directory_is_cleaned");
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	write_file(temp_dir / L"payload.dll", "payload");
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
+void vanished_updater_directory_is_already_clean(const fs::path &scratch)
+{
+	Case c(scratch, "vanished_updater_directory_is_already_clean");
+	CHECK(cleanup_updater_temp_dir(c.root / L"missing"));
+}
+
+void updater_run_lock_can_be_removed(const fs::path &scratch)
+{
+	Case c(scratch, "updater_run_lock_can_be_removed");
+	const fs::path temp_dir = c.root / L"run";
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+
+	void *lock = nullptr;
+	CHECK(acquire_updater_run_lock(temp_dir, &lock));
+	release_updater_run_lock(lock);
+	CHECK(remove_updater_run_lock(temp_dir));
+	CHECK(!file_exists(temp_dir / L".run-lock"));
+}
+
+void preview_ancestor_policy_is_used_for_cleanup(const fs::path &scratch)
+{
+	Case c(scratch, "preview_ancestor_policy_is_used_for_cleanup");
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	CHECK(make_untrusted(c.root));
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(cleanup_updater_temp_dir(temp_dir, false, &diagnostics));
+	CHECK(!file_exists(temp_dir));
+}
+
+void preview_ancestor_policy_is_used_for_pruning(const fs::path &scratch)
+{
+	Case c(scratch, "preview_ancestor_policy_is_used_for_pruning");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path run = root / L"run-00000000000000000000000000000001";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(prepare_updater_temp_dir(run, false));
+
+	std::error_code ec;
+	fs::last_write_time(run, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+	CHECK(make_untrusted(c.root));
+	prune_updater_runs(root, false);
+	CHECK(!file_exists(run));
+}
+
+void stale_updater_runs_are_pruned(const fs::path &scratch)
+{
+	Case c(scratch, "stale_updater_runs_are_pruned");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path abandoned = root / L"run-00000000000000000000000000000001";
+	const fs::path recovery = root / L"run-00000000000000000000000000000002";
+	const fs::path fresh = root / L"run-00000000000000000000000000000003";
+	const fs::path interrupted = root / L"run-00000000000000000000000000000004";
+	const fs::path claimed = root / L".prune-00000000000000000000000000000005";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(prepare_updater_temp_dir(abandoned, false));
+	CHECK(prepare_updater_temp_dir(recovery, false));
+	CHECK(prepare_updater_temp_dir(fresh, false));
+	CHECK(prepare_updater_temp_dir(interrupted, false));
+
+	std::error_code ec;
+	fs::create_directories(abandoned / L"new-files", ec);
+	fs::create_directories(recovery / L"old-files", ec);
+	fs::last_write_time(abandoned, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+	fs::last_write_time(recovery, fs::file_time_type::clock::now() - std::chrono::hours(24 * 8), ec);
+	fs::rename(interrupted, claimed, ec);
+	CHECK(!ec);
+
+	prune_updater_runs(root);
+	CHECK(!file_exists(abandoned));
+	CHECK(!file_exists(recovery));
+	CHECK(file_exists(fresh));
+	CHECK(!file_exists(claimed));
+}
+
+void updater_root_quarantine_sweep_is_non_recursive(const fs::path &scratch)
+{
+	Case c(scratch, "updater_root_quarantine_sweep_is_non_recursive");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path nonempty = c.root / L"updater-root.quarantine-00000000000000000000000000000001";
+	const fs::path empty = c.root / L"updater-root.quarantine-00000000000000000000000000000002";
+	const fs::path unrelated = c.root / L"updater-root.quarantine-not-random";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(make_untrusted(nonempty));
+	CHECK(make_untrusted(empty));
+	CHECK(make_untrusted(unrelated));
+	write_file(nonempty / L"planted.dll", "theirs");
+
+	prune_updater_runs(root);
+	CHECK(file_exists(nonempty));
+	CHECK(!file_exists(empty));
+	CHECK(file_exists(nonempty / L"planted.dll"));
+	CHECK(file_exists(unrelated));
+
+	std::error_code ec;
+	CHECK(fs::remove(nonempty / L"planted.dll", ec));
+	prune_updater_runs(root);
+	CHECK(!file_exists(nonempty));
+}
+
+void active_updater_run_is_not_pruned(const fs::path &scratch)
+{
+	Case c(scratch, "active_updater_run_is_not_pruned");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path run = root / L"run-00000000000000000000000000000001";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(prepare_updater_temp_dir(run, false));
+	void *lock = nullptr;
+	CHECK(acquire_updater_run_lock(run, &lock));
+
+	std::error_code ec;
+	fs::last_write_time(run, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+
+	prune_updater_runs(root);
+	CHECK(file_exists(run));
+
+	release_updater_run_lock(lock);
+	prune_updater_runs(root);
+	CHECK(!file_exists(run));
+}
+
+void untrusted_stale_run_is_not_pruned(const fs::path &scratch)
+{
+	Case c(scratch, "untrusted_stale_run_is_not_pruned");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path run = root / L"run-00000000000000000000000000000001";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(make_untrusted(run));
+	std::error_code ec;
+	CHECK(fs::create_directory(run / L".run-lock", ec));
+
+	fs::last_write_time(run, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+	UpdaterStorageDiagnostics diagnostics;
+	prune_updater_runs(root, true, &diagnostics);
+	CHECK(file_exists(run));
+	CHECK(diagnostics.cleanup_warning.find(L"Refusing updater directory") != std::wstring::npos);
+}
 
 void untrusted_directory_is_replaced(const fs::path &scratch)
 {
@@ -640,6 +980,28 @@ int wmain(int argc, wchar_t **argv)
 		return 2;
 	}
 
+	updater_directory_is_created_and_verified(scratch);
+	untrusted_updater_directory_is_not_adopted(scratch);
+	updater_directory_requires_the_updater_acl(scratch);
+	updater_directory_needs_a_trusted_parent(scratch);
+	updater_directory_accepts_a_creation_only_parent(scratch);
+	updater_directory_rejects_non_normal_paths(scratch);
+	updater_directory_rejects_reserved_prune_names(scratch);
+	updater_directory_rejects_a_reparse_point(scratch);
+	updater_root_is_resolved_from_programdata(scratch);
+	untrusted_updater_root_is_replaced(scratch);
+	updater_root_replaces_a_file(scratch);
+	blocked_updater_root_quarantine_is_distinct(scratch);
+	updater_directory_rejects_a_file(scratch);
+	owned_updater_directory_is_cleaned(scratch);
+	vanished_updater_directory_is_already_clean(scratch);
+	updater_run_lock_can_be_removed(scratch);
+	preview_ancestor_policy_is_used_for_cleanup(scratch);
+	preview_ancestor_policy_is_used_for_pruning(scratch);
+	stale_updater_runs_are_pruned(scratch);
+	updater_root_quarantine_sweep_is_non_recursive(scratch);
+	active_updater_run_is_not_pruned(scratch);
+	untrusted_stale_run_is_not_pruned(scratch);
 	untrusted_directory_is_replaced(scratch);
 	secured_directory_is_left_alone(scratch);
 	open_handle_blocks_quarantine(scratch);

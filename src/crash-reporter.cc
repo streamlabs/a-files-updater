@@ -710,6 +710,9 @@ std::string get_logs_json() noexcept
 {
 	std::list<std::string> last_logs;
 	try {
+		if (!params.startup_diagnostic.empty())
+			last_logs.push_back(std::string("\"") + escapeJsonString(params.startup_diagnostic) + std::string("\""));
+
 		std::ifstream logfile(params.log_file_path);
 
 		std::string logline;

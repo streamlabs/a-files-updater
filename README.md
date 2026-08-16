@@ -12,7 +12,8 @@
 6. **Installs packages** — can download and silently run installers (e.g., VC++ Redistributable) as prerequisites
 7. **Copies updated files** — replaces the old app files
 8. **Secures the graphics hook directory** — hardens permissions on `%ProgramData%\obs-studio-hook` after every update (see below)
-9. **Launches the updated app** — or falls back to launching the old app if the update failed
+9. **Uses trusted update storage** — stages downloads and rollback copies below an Administrators-owned `%ProgramData%\slobs-updater` directory and verifies its owner, DACL, reparse status, and ancestors before every run
+10. **Launches the updated app** — or falls back to launching the old app if the update failed
 
 **Notable details:**
 - Built with C++17, uses Boost (locale, iostreams, asio, beast), OpenSSL, and zlib
@@ -21,6 +22,8 @@
 - Supports both interactive and non-interactive (silent/automated) modes
 - Includes crash reporting (`crash-reporter.cc`) and an error state file for the parent app to inspect
 - DPI-aware — responds to `WM_DPICHANGED` and scales all UI elements accordingly
+- Removes the current updater run after normal completion, prunes abandoned payload runs after 24 hours while skipping active runs, and makes failed-rollback originals eligible for pruning after 7 days
+- Retries leaf-only cleanup of quarantined updater roots on later runs; non-empty attacker-owned trees are never recursively traversed and remain until emptied
 
 # How to build
 As easy as: 

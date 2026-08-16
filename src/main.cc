@@ -15,6 +15,7 @@
 #include "text-panel.hpp"
 #include "blocker-panel.hpp"
 #include "hook-permissions.hpp"
+#include "updater-storage.hpp"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,18 @@ using chrono::high_resolution_clock;
 using chrono::duration_cast;
 
 struct update_parameters params;
+
+int finish_updater(int exit_code)
+{
+	UpdaterStorageDiagnostics diagnostics;
+	if (!params.cleanup_temp_dir(&diagnostics)) {
+		const std::string reason = ConvertToUtf8(diagnostics.failure);
+		params.startup_diagnostic = reason;
+		save_exit_error("UpdaterStorageCleanupFailure", reason);
+		handle_exit();
+	}
+	return exit_code;
+}
 
 /* Some basic constants that are adjustable at compile time */
 const double average_bw_time_span = 250;
@@ -1822,7 +1835,11 @@ BOOL HasInstalled_VC_redistx64()
 
 void exit_on_init_fail(MultiByteCommandLine &command_line)
 {
-	if (command_line.argc() == 1 && is_launched_by_explorer()) {
+	if (!params.startup_error_category.empty()) {
+		save_exit_error(params.startup_error_category, params.startup_error_reason);
+		if (!params.exec_no_update.empty())
+			StartApplication(params.exec_no_update.c_str(), params.exec_cwd.c_str());
+	} else if (command_line.argc() == 1 && is_launched_by_explorer()) {
 		ShowInfo(boost::locale::translate(
 			"You have launched the updater for Streamlabs Desktop, which can't work on its own. Please launch the Desktop App and it will check for updates automatically.\nIf you're having issues you can download the latest version from https://streamlabs.com/."));
 		save_exit_error("StartupSkipped", "Launched manually");
@@ -1853,8 +1870,15 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 
 	if (!update_completed) {
 		exit_on_init_fail(command_line);
-		return 0;
+		return finish_updater(0);
 	}
+
+	if (!params.storage_ancestor_warning.empty())
+		report_handled_error("UpdaterStorageAncestorUntrusted", params.storage_ancestor_warning);
+	if (!params.storage_root_replaced.empty())
+		report_handled_error("UpdaterStorageRootReplaced", params.storage_root_replaced);
+	if (!params.storage_prune_warning.empty())
+		report_handled_error("UpdaterStoragePruneFailure", params.storage_prune_warning);
 
 	std::optional<callbacks_impl> cb_impl_storage;
 	try {
@@ -1865,7 +1889,7 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 		save_exit_error("StartupFailure", "Failed to render UI");
 		handle_exit();
 		StartApplication(params.exec_no_update.c_str(), params.exec_cwd.c_str());
-		return 0;
+		return finish_updater(0);
 	}
 	callbacks_impl &cb_impl = *cb_impl_storage;
 
@@ -1949,8 +1973,8 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 	} else {
 		handle_exit();
 
-		return 1;
+		return finish_updater(1);
 	}
 
-	return 0;
+	return finish_updater(0);
 }
