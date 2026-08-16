@@ -623,8 +623,22 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		}
 	}
 
+	if (RemoveDirectoryW(dir.c_str()))
+		return true;
+
+	DWORD error = GetLastError();
+	if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+		return true;
+	if (error != ERROR_DIR_NOT_EMPTY) {
+		std::wstring reason = L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error);
+		if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+			reason += L"; updater log retained at " + log.wstring();
+		set_failure(diagnostics, reason);
+		return false;
+	}
+
 	if (!DeleteFileW(log.c_str())) {
-		const DWORD error = GetLastError();
+		error = GetLastError();
 		if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
 			set_failure(diagnostics, L"Failed to remove updater log " + log.wstring() + L": " + format_hex32(error) +
 							 L"; updater log retained at " + log.wstring());
@@ -632,12 +646,12 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		}
 	}
 
-	if (!RemoveDirectoryW(dir.c_str())) {
-		const DWORD error = GetLastError();
-		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
-			return true;
-		set_failure(diagnostics, L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error));
-		return false;
-	}
-	return true;
+	if (RemoveDirectoryW(dir.c_str()))
+		return true;
+
+	error = GetLastError();
+	if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+		return true;
+	set_failure(diagnostics, L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error));
+	return false;
 }

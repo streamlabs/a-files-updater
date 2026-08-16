@@ -39,6 +39,7 @@ int finish_updater(int exit_code)
 {
 	UpdaterStorageDiagnostics diagnostics;
 	if (!params.cleanup_temp_dir(&diagnostics)) {
+		params.cleanup_failure_reported = true;
 		const std::string reason = ConvertToUtf8(diagnostics.failure);
 		params.startup_diagnostic = reason;
 		save_exit_error("UpdaterStorageCleanupFailure", reason);

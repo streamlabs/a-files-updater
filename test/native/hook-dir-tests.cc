@@ -251,11 +251,16 @@ bool quarantine_exists(const fs::path &dir)
 bool updater_log_sidecar_exists(const fs::path &dir)
 {
 	std::error_code ec;
-	for (const auto &entry : fs::directory_iterator(dir.parent_path(), ec)) {
+	fs::directory_iterator iter(dir.parent_path(), ec);
+	const fs::directory_iterator end;
+	while (!ec && iter != end) {
+		const fs::directory_entry &entry = *iter;
 		if (entry.path().filename().wstring().rfind(L".updater-log-", 0) == 0)
 			return true;
+		iter.increment(ec);
 	}
 
+	CHECK(!ec);
 	return false;
 }
 
@@ -537,7 +542,9 @@ void open_directory_handle_blocks_final_cleanup_without_a_sidecar(const fs::path
 	UpdaterStorageDiagnostics diagnostics;
 	CHECK(!cleanup_updater_temp_dir(temp_dir, true, &diagnostics));
 	CHECK(file_exists(temp_dir));
-	CHECK(!file_exists(log));
+	CHECK(file_exists(log));
+	CHECK(read_file(log) == "diagnostic log");
+	CHECK(diagnostics.failure.find(L"updater log retained at") != std::wstring::npos);
 	CHECK(!updater_log_sidecar_exists(temp_dir));
 
 	CloseHandle(held);

@@ -33,6 +33,9 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 
 update_parameters::~update_parameters()
 {
+	if (cleanup_failure_reported)
+		return;
+
 	try {
 		cleanup_temp_dir();
 	} catch (...) {
