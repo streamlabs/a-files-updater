@@ -112,6 +112,27 @@ bool apply_sddl(const fs::path &path, const std::wstring &sddl)
 	return ok;
 }
 
+bool apply_dacl(const fs::path &path, const std::wstring &sddl)
+{
+	PSECURITY_DESCRIPTOR descriptor = nullptr;
+	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+		return false;
+
+	PACL dacl = nullptr;
+	BOOL present = false;
+	BOOL defaulted = false;
+	bool ok = false;
+
+	if (GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) && present) {
+		std::wstring text = path.wstring();
+		const SECURITY_INFORMATION what = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+		ok = SetNamedSecurityInfoW(text.data(), SE_FILE_OBJECT, what, nullptr, nullptr, dacl, nullptr) == ERROR_SUCCESS;
+	}
+
+	LocalFree(descriptor);
+	return ok;
+}
+
 std::wstring read_sddl(const fs::path &path)
 {
 	PSECURITY_DESCRIPTOR descriptor = nullptr;
@@ -290,10 +311,21 @@ void updater_directory_requires_the_updater_acl(const fs::path &scratch)
 	Case c(scratch, "updater_directory_requires_the_updater_acl");
 	const fs::path missing_admin = c.root / L"missing-admin";
 	const fs::path extra_reader = c.root / L"extra-reader";
+	const std::wstring removable_dacl = L"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+
+	/* Older runs left this leaf with no Administrators ACE, so an interrupted
+	 * test could not repair or remove it on the next run. The owner can always
+	 * replace the DACL without also requesting WRITE_OWNER. */
+	if (file_exists(missing_admin)) {
+		CHECK(apply_dacl(missing_admin, removable_dacl));
+		std::error_code ec;
+		CHECK(fs::remove(missing_admin, ec));
+	}
 
 	CHECK(prepare_updater_temp_dir(missing_admin, false));
-	CHECK(apply_sddl(missing_admin, L"O:BAD:PAI(A;OICI;FA;;;SY)"));
+	CHECK(apply_sddl(missing_admin, L"O:BAD:PAI(A;OICI;FA;;;SY)(A;;FA;;;BA)"));
 	CHECK(!prepare_updater_temp_dir(missing_admin, true));
+	CHECK(apply_dacl(missing_admin, removable_dacl));
 
 	CHECK(prepare_updater_temp_dir(extra_reader, false));
 	CHECK(apply_sddl(extra_reader, L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)"));
