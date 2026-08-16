@@ -12,16 +12,25 @@ yarn install
 yarn node src\run_tests.js
 ```
 
-To run just one test. Change `src\run_tests.js` to set `run_one_test` and test paramets like you need. And run it as `node src\run_tests.js`
+Run the command without arguments to execute the full integration pack. To run
+the manually configured single scenario, use:
+
+```
+yarn node src\run_tests.js --run-one-test
+```
+
+The single scenario's options are in the `run_one_test` branch of
+`src\run_tests.js`; changing between the full pack and that scenario does not
+require editing the source.
 
 
 To just create test environment without automaticaly launching updater use `node src\run_test_env.js`. 
 
 It will generate files and start servers. 
 
-Updater then can be started from IDE as: 
+Updater then can be started from IDE as:
 
-```--base-url "https://localhost/" --version "0.11.9-preview.1" --exec "C:\\work\\repos\\a-files-updater\\build\\Debug\\slobs-updater.exe" --cwd "C:\\work\\repos\\a-files-updater\\test\\testfiles" --app-dir "C:\\work\\repos\\a-files-updater\\test\\testfiles\\initial" --force-temp```
+```--base-url "https://localhost/" --version "0.11.9-preview.1" --exec "C:\\work\\repos\\a-files-updater\\build\\Debug\\slobs-updater.exe" --cwd "C:\\work\\repos\\a-files-updater\\test\\testfiles" --app-dir "C:\\work\\repos\\a-files-updater\\test\\testfiles\\initial"```
 
 ## What?
 

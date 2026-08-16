@@ -4,7 +4,16 @@ const test_config = require('./test_config.js');
 const fse = require('fs-extra')
 const path = require('path');
 
-const run_one_test = false;
+const runner_arguments = process.argv.slice(2);
+const unknown_arguments = runner_arguments.filter(argument => argument !== '--run-one-test');
+
+if (unknown_arguments.length > 0) {
+    console.error(`Unknown argument(s): ${unknown_arguments.join(', ')}`);
+    console.error('Usage: yarn node src\\run_tests.js [--run-one-test]');
+    process.exit(2);
+}
+
+const run_one_test = runner_arguments.includes('--run-one-test');
 
 async function run_tests() {
     let testinfo;
