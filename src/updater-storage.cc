@@ -6,6 +6,7 @@
 #include <shlobj.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -22,10 +23,19 @@ constexpr auto kRecoveryRunAge = std::chrono::hours(24 * 7);
 
 enum class PrepareResult { Ready, Collision, Failed };
 
-void set_failure(UpdaterStorageDiagnostics *diagnostics, const std::wstring &reason)
+std::wstring hex32(uint32_t value)
 {
-	if (diagnostics)
+	wchar_t buffer[11] = {};
+	swprintf_s(buffer, L"0x%08X", value);
+	return buffer;
+}
+
+void set_failure(UpdaterStorageDiagnostics *diagnostics, const std::wstring &reason, const std::string &category = "UpdaterStorageFailure")
+{
+	if (diagnostics) {
 		diagnostics->failure = reason;
+		diagnostics->failure_category = category;
+	}
 	wlog_warn(L"%s", reason.c_str());
 }
 
@@ -42,7 +52,7 @@ bool dacl_is_protected(const fs::path &dir, std::wstring &why)
 	PSECURITY_DESCRIPTOR descriptor = nullptr;
 	const DWORD read = GetNamedSecurityInfoW(dir.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, nullptr, &descriptor);
 	if (read != ERROR_SUCCESS) {
-		why = L"has an unreadable DACL control: " + std::to_wstring(read);
+		why = L"has an unreadable DACL control: " + hex32(read);
 		return false;
 	}
 
@@ -92,7 +102,7 @@ PrepareResult create_secure_directory(const fs::path &dir, bool enforce_ancestor
 {
 	SECURITY_ATTRIBUTES attributes = {sizeof(attributes), nullptr, false};
 	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(kUpdaterDirSddl, SDDL_REVISION_1, &attributes.lpSecurityDescriptor, nullptr)) {
-		set_failure(diagnostics, L"Failed to build updater directory descriptor: " + std::to_wstring(GetLastError()));
+		set_failure(diagnostics, L"Failed to build updater directory descriptor: " + hex32(GetLastError()));
 		return PrepareResult::Failed;
 	}
 
@@ -103,7 +113,7 @@ PrepareResult create_secure_directory(const fs::path &dir, bool enforce_ancestor
 	if (!created) {
 		if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)
 			return PrepareResult::Collision;
-		set_failure(diagnostics, L"Failed to create updater directory " + dir.wstring() + L": " + std::to_wstring(error));
+		set_failure(diagnostics, L"Failed to create updater directory " + dir.wstring() + L": " + hex32(error));
 		return PrepareResult::Failed;
 	}
 
@@ -111,8 +121,11 @@ PrepareResult create_secure_directory(const fs::path &dir, bool enforce_ancestor
 		diagnostics->created = true;
 
 	if (!trusted_directory(dir, enforce_ancestors, diagnostics)) {
-		if (!RemoveDirectoryW(dir.c_str()))
+		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Failed to remove rejected updater directory %s: %lu", dir.c_str(), GetLastError());
+		} else if (diagnostics) {
+			diagnostics->created = false;
+		}
 		return PrepareResult::Failed;
 	}
 
@@ -141,7 +154,7 @@ PrepareResult prepare_directory(const fs::path &dir, bool allow_existing, bool e
 
 	const DWORD lookup_error = GetLastError();
 	if (lookup_error != ERROR_FILE_NOT_FOUND && lookup_error != ERROR_PATH_NOT_FOUND) {
-		set_failure(diagnostics, L"Could not inspect updater directory " + dir.wstring() + L": " + std::to_wstring(lookup_error));
+		set_failure(diagnostics, L"Could not inspect updater directory " + dir.wstring() + L": " + hex32(lookup_error));
 		return PrepareResult::Failed;
 	}
 
@@ -185,13 +198,19 @@ bool quarantine_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostic
 		if (MoveFileExW(root.c_str(), aside.c_str(), 0)) {
 			if (diagnostics)
 				diagnostics->root_replaced = true;
-			wlog_warn(L"Moved untrusted updater root %s to %s", root.c_str(), aside.c_str());
+			if (MoveFileExW(aside.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+				wlog_warn(L"Moved untrusted updater root %s to %s; it is queued for deletion at reboot", root.c_str(), aside.c_str());
+			} else {
+				wlog_warn(L"Could not queue updater root quarantine %s for deletion: %s", aside.c_str(), hex32(GetLastError()).c_str());
+			}
 			return true;
 		}
 
 		const DWORD error = GetLastError();
 		if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) {
-			set_failure(diagnostics, L"Could not move untrusted updater root " + root.wstring() + L" aside: " + std::to_wstring(error));
+			const bool blocked = error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION;
+			set_failure(diagnostics, L"Could not move untrusted updater root " + root.wstring() + L" aside: " + hex32(error),
+				    blocked ? "UpdaterStorageQuarantineBlocked" : "UpdaterStorageFailure");
 			return false;
 		}
 	}
@@ -229,6 +248,8 @@ bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagn
 
 		if (!quarantine_root(root, diagnostics))
 			return false;
+		if (diagnostics)
+			diagnostics->root_replaced_reason = check.failure;
 	}
 
 	const PrepareResult created = prepare_directory(root, false, false, diagnostics);
@@ -239,21 +260,27 @@ bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagn
 	return created == PrepareResult::Ready;
 }
 
-void prune_updater_runs(const fs::path &root)
+void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterStorageDiagnostics *diagnostics)
 {
-	std::error_code ec;
+	std::error_code iteration_error;
 	const auto now = fs::file_time_type::clock::now();
 	std::vector<fs::path> stale_runs;
-	for (const fs::directory_entry &entry : fs::directory_iterator(root, fs::directory_options::skip_permission_denied, ec)) {
-		if (!entry.is_directory(ec) || entry.is_symlink(ec) || !run_leaf(entry.path()))
+	for (const fs::directory_entry &entry : fs::directory_iterator(root, fs::directory_options::skip_permission_denied, iteration_error)) {
+		std::error_code type_error;
+		if (!entry.is_directory(type_error) || type_error)
+			continue;
+		type_error.clear();
+		if (entry.is_symlink(type_error) || type_error || !run_leaf(entry.path()))
 			continue;
 
-		const auto modified = entry.last_write_time(ec);
-		if (ec)
+		std::error_code modified_error;
+		const auto modified = entry.last_write_time(modified_error);
+		if (modified_error)
 			continue;
 
-		const bool has_backup = fs::exists(entry.path() / L"old-files", ec);
-		if (ec)
+		std::error_code backup_error;
+		const bool has_backup = fs::exists(entry.path() / L"old-files", backup_error);
+		if (backup_error)
 			continue;
 
 		const auto retention = has_backup ? kRecoveryRunAge : kAbandonedRunAge;
@@ -262,10 +289,18 @@ void prune_updater_runs(const fs::path &root)
 
 		stale_runs.push_back(entry.path());
 	}
+	if (iteration_error && diagnostics && diagnostics->cleanup_warning.empty()) {
+		diagnostics->cleanup_warning = L"Failed to enumerate updater runs below " + root.wstring() + L": " + hex32(iteration_error.value());
+		wlog_warn(L"%s", diagnostics->cleanup_warning.c_str());
+	}
 
 	for (const fs::path &run : stale_runs) {
-		if (cleanup_updater_temp_dir(run))
+		UpdaterStorageDiagnostics cleanup;
+		if (cleanup_updater_temp_dir(run, enforce_ancestors, &cleanup)) {
 			wlog_info(L"Pruned abandoned updater run %s", run.c_str());
+		} else if (diagnostics && diagnostics->cleanup_warning.empty()) {
+			diagnostics->cleanup_warning = cleanup.failure;
+		}
 	}
 }
 
@@ -280,7 +315,7 @@ fs::path create_default_updater_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 	if (!prepare_updater_root(root, diagnostics))
 		return {};
 
-	prune_updater_runs(root);
+	prune_updater_runs(root, false, diagnostics);
 
 	for (int attempt = 0; attempt < 8; attempt++) {
 		const std::wstring suffix = security_random_hex(4);
@@ -301,8 +336,10 @@ fs::path create_default_updater_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 			return run_dir;
 		}
 		if (prepared != PrepareResult::Collision) {
-			if (diagnostics)
+			if (diagnostics) {
 				diagnostics->failure = run_diagnostics.failure;
+				diagnostics->failure_category = run_diagnostics.failure_category;
+			}
 			return {};
 		}
 	}
@@ -311,16 +348,15 @@ fs::path create_default_updater_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 	return {};
 }
 
-bool cleanup_updater_temp_dir(const fs::path &dir)
+bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, UpdaterStorageDiagnostics *diagnostics)
 {
-	UpdaterStorageDiagnostics diagnostics;
-	if (!trusted_directory(dir, true, &diagnostics))
+	if (!trusted_directory(dir, enforce_ancestors, diagnostics))
 		return false;
 
 	std::error_code ec;
 	fs::remove_all(dir, ec);
 	if (ec) {
-		wlog_warn(L"Failed to clean updater run %s: %d %S", dir.c_str(), ec.value(), ec.message().c_str());
+		set_failure(diagnostics, L"Failed to clean updater run " + dir.wstring() + L": " + hex32(ec.value()));
 		return false;
 	}
 	return true;

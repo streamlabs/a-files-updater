@@ -7,7 +7,10 @@ namespace fs = std::filesystem;
 
 struct UpdaterStorageDiagnostics {
 	std::wstring failure;
+	std::string failure_category;
 	std::wstring ancestor_warning;
+	std::wstring root_replaced_reason;
+	std::wstring cleanup_warning;
 	bool created = false;
 	bool root_replaced = false;
 };
@@ -31,7 +34,7 @@ bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagn
 
 /* Removes abandoned run-* siblings. Runs without rollback originals are
  * eligible after one day; recovery backups are retained for seven days. */
-void prune_updater_runs(const fs::path &root);
+void prune_updater_runs(const fs::path &root, bool enforce_ancestors = true, UpdaterStorageDiagnostics *diagnostics = nullptr);
 
 /* Removes a run directory only after verifying the object is still trusted. */
-bool cleanup_updater_temp_dir(const fs::path &dir);
+bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors = true, UpdaterStorageDiagnostics *diagnostics = nullptr);

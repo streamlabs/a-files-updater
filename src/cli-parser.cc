@@ -207,6 +207,10 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	}
 
 	if (num_errors > 0) {
+		arg_dstr_t errors = arg_dstr_create();
+		arg_print_errors_ds(errors, end_arg, argv[0]);
+		params->startup_diagnostic = arg_dstr_cstr(errors);
+		arg_dstr_destroy(errors);
 		arg_print_errors(stderr, end_arg, argv[0]);
 		goto parse_error;
 	}
@@ -223,31 +227,37 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	if (temp_dir_arg->count > 0) {
 		params->temp_dir = fetch_path(temp_dir_arg->sval[0], strlen(temp_dir_arg->sval[0]));
 		if (!prepare_updater_temp_dir(params->temp_dir, force_arg->count > 0, &storage_diagnostics)) {
-			params->startup_error_category = "UpdaterStorageFailure";
+			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure" : storage_diagnostics.failure_category;
 			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
 			params->startup_diagnostic = params->startup_error_reason;
 			success = false;
 			goto parse_error;
 		}
 		params->owns_temp_dir = storage_diagnostics.created;
+		params->enforce_temp_ancestors = true;
 	} else {
 		log_info("Temporary directory not provided.");
 
 		params->temp_dir = create_default_updater_temp_dir(&storage_diagnostics);
 
 		if (params->temp_dir.empty()) {
-			params->startup_error_category = "UpdaterStorageFailure";
+			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure" : storage_diagnostics.failure_category;
 			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
 			params->startup_diagnostic = params->startup_error_reason;
 			success = false;
 			goto parse_error;
 		}
 		params->owns_temp_dir = true;
+		params->enforce_temp_ancestors = false;
 	}
 	if (!storage_diagnostics.ancestor_warning.empty()) {
 		params->storage_ancestor_warning = ConvertToUtf8(storage_diagnostics.ancestor_warning);
 		params->startup_diagnostic = params->storage_ancestor_warning;
 	}
+	if (!storage_diagnostics.root_replaced_reason.empty())
+		params->storage_root_replaced = ConvertToUtf8(storage_diagnostics.root_replaced_reason);
+	if (!storage_diagnostics.cleanup_warning.empty())
+		params->storage_prune_warning = ConvertToUtf8(storage_diagnostics.cleanup_warning);
 
 	log_path = params->temp_dir;
 	log_path /= "slobs-updater.log";

@@ -3,7 +3,7 @@
 #include "logger/log.h"
 #include "updater-storage.hpp"
 
-update_parameters::~update_parameters()
+bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 {
 	if (log_file) {
 		log_set_fp(nullptr);
@@ -11,6 +11,17 @@ update_parameters::~update_parameters()
 		log_file = nullptr;
 	}
 
-	if (owns_temp_dir && !retain_temp_dir && !temp_dir.empty())
-		cleanup_updater_temp_dir(temp_dir);
+	if (!owns_temp_dir || retain_temp_dir || temp_dir.empty())
+		return true;
+
+	if (!cleanup_updater_temp_dir(temp_dir, enforce_temp_ancestors, diagnostics))
+		return false;
+
+	owns_temp_dir = false;
+	return true;
+}
+
+update_parameters::~update_parameters()
+{
+	cleanup_temp_dir();
 }
