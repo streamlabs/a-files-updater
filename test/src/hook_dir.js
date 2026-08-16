@@ -25,19 +25,19 @@ exports.hook_dir = path.join(scratch_root, 'obs-studio-hook');
 
 function elevated() {
   try {
-    cp.execSync('net session', { stdio: 'ignore' });
+    cp.execFileSync('net.exe', ['session'], { stdio: 'ignore' });
     return true;
   } catch (e) {
     return false;
   }
 }
 
-function run(command) {
+function run(file, args) {
   try {
-    cp.execSync(command, { stdio: 'ignore' });
+    cp.execFileSync(file, args, { stdio: 'ignore' });
     return true;
   } catch (e) {
-    console.log('Failed: ' + command);
+    console.log('Failed: ' + file + ' ' + args.join(' '));
     return false;
   }
 }
@@ -46,7 +46,7 @@ function run(command) {
  * standard user, which is what makes the repair replace it rather than fix it
  * in place. */
 function make_untrusted(dir) {
-  return run(`takeown /f "${dir}"`) && run(`icacls "${dir}" /grant *S-1-5-32-545:(OI)(CI)F`);
+  return run('takeown.exe', ['/f', dir]) && run('icacls.exe', [dir, '/grant', '*S-1-5-32-545:(OI)(CI)F']);
 }
 
 /* mkdirpSync leaves every directory it creates owned by whoever is running
@@ -55,7 +55,16 @@ function make_untrusted(dir) {
  * and locked down the same way the shared hook directory itself is, so the
  * chain the parser demands is the chain this tree actually has. */
 function harden_ancestor(dir) {
-  return run(`takeown /f "${dir}" /a`) && run(`icacls "${dir}" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F`);
+  return (
+    run('takeown.exe', ['/f', dir, '/a']) &&
+    run('icacls.exe', [
+      dir,
+      '/inheritance:r',
+      '/grant:r',
+      '*S-1-5-18:(OI)(CI)F',
+      '*S-1-5-32-544:(OI)(CI)F',
+    ])
+  );
 }
 
 /* A real synchronous sleep: ping to loopback replies immediately, so -w never
@@ -197,7 +206,9 @@ exports.prepare = function (testinfo) {
 exports.cleanup = function (testinfo) {
   if (holder_process) {
     try {
-      cp.execSync(`taskkill /pid ${holder_process.pid} /t /f`, { stdio: 'ignore' });
+      cp.execFileSync('taskkill.exe', ['/pid', String(holder_process.pid), '/t', '/f'], {
+        stdio: 'ignore',
+      });
     } catch (e) {}
     holder_process = null;
   }
@@ -282,7 +293,7 @@ exports.check = async function (testinfo) {
   if (testinfo.expectedHookDirSecured !== undefined) {
     let acl = null;
     try {
-      acl = cp.execSync(`icacls "${exports.hook_dir}"`).toString();
+      acl = cp.execFileSync('icacls.exe', [exports.hook_dir]).toString();
     } catch (e) {}
 
     if (acl === null) {
