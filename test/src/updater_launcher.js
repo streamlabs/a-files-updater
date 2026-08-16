@@ -24,7 +24,6 @@ exports.start_updater = async function (testinfo) {
     '--cwd', updateDirE,
     '--interactive', `${testinfo.runAsInteractive}`,
     '--app-dir', updateDirE,
-    '--force-temp',
     '--details', updateJsonFile
   ];
 

@@ -4,6 +4,7 @@
 #include "cli-parser.hpp"
 #include "hook-permissions.hpp"
 #include "logger/log.h"
+#include "updater-storage.hpp"
 #include <clocale>
 #include <cwctype>
 #include "utils.hpp"
@@ -134,34 +135,6 @@ static bool is_inside(const fs::path &path, const fs::path &root)
 	return lowered(path.wstring()).rfind(prefix, 0) == 0;
 }
 
-static fs::path fetch_default_temp_dir()
-{
-	std::error_code ec{};
-	fs::path temp_dir = fs::temp_directory_path(ec);
-
-	if (!ec) {
-		temp_dir /= "slobs-updater";
-
-		time_t t = time(nullptr);
-		struct tm *lt = localtime(&t);
-
-		std::srand(static_cast<unsigned int>(time(nullptr)));
-
-		char buf[24];
-		sprintf(buf, "%04i%03i%02i%02i%02i%c%c\0", lt->tm_year + 1900, lt->tm_yday, lt->tm_hour, lt->tm_min, lt->tm_sec, 'a' + rand() % 20,
-			'a' + rand() % 20);
-
-		temp_dir /= buf;
-
-		fs::create_directories(temp_dir, ec);
-	} else {
-		log_info("Failed to get temporary directory from system: %d %s", ec.value(), ec.message().c_str());
-
-		temp_dir = "";
-	}
-	return temp_dir;
-}
-
 bool su_parse_command_line(int argc, char **argv, struct update_parameters *params)
 {
 	std::error_code ec{};
@@ -170,12 +143,13 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	bool success = true;
 	fs::path log_path;
+	UpdaterStorageDiagnostics storage_diagnostics;
 
 	struct arg_lit *help_arg = arg_lit0("h", "help", "Print information about this program");
 
 	struct arg_lit *dump_args_arg = arg_lit0(NULL, "dump-args", "Print all argument values, including this one");
 
-	struct arg_lit *force_arg = arg_lit0(NULL, "force-temp", "Force use temporary directory even if it exists");
+	struct arg_lit *force_arg = arg_lit0(NULL, "force-temp", "Reuse an existing temporary directory after verifying its permissions");
 
 	struct arg_str *base_uri_arg = arg_str1("b", "base-url", "<url>", "The base URL to fetch updates from");
 
@@ -185,7 +159,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	struct arg_str *cwd_arg = arg_str0("c", "cwd", "<working directory>", "The working directory of which to start the application in");
 
-	struct arg_str *temp_dir_arg = arg_str0("t", "temp-dir", "<directory>", "The directory to place temporary files to be deleted later");
+	struct arg_str *temp_dir_arg = arg_str0("t", "temp-dir", "<directory>", "A trusted directory for staged and backup files");
 
 	struct arg_str *version_arg = arg_str1("v", "version", "<version>", "The version of which to update to");
 
@@ -225,21 +199,75 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		goto success;
 	}
 
+	//if missing 'details' param ignore it
+	if (num_errors == 1 && end_arg->parent) {
+		arg_hdr *parent = (arg_hdr *)end_arg->parent[0];
+		if (parent && parent->shortopts && strcmp(parent->shortopts, "d") == 0)
+			num_errors = 0;
+	}
+
+	if (num_errors > 0) {
+		arg_dstr_t errors = arg_dstr_create();
+		arg_print_errors_ds(errors, end_arg, argv[0]);
+		params->startup_diagnostic = arg_dstr_cstr(errors);
+		arg_dstr_destroy(errors);
+		arg_print_errors(stderr, end_arg, argv[0]);
+		goto parse_error;
+	}
+
+	/* Storage setup can fail before the normal log exists. Preserve enough of
+	 * the valid command line to restart Desktop without attempting an update. */
+	params->exec.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\""));
+	params->exec_no_update.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\"") + std::string(" --skip-update"));
+	if (cwd_arg->count > 0)
+		params->exec_cwd.assign(cwd_arg->sval[0]);
+	if (interactive_arg->count > 0)
+		params->interactive = interactive_arg->ival[0];
+
 	if (temp_dir_arg->count > 0) {
 		params->temp_dir = fetch_path(temp_dir_arg->sval[0], strlen(temp_dir_arg->sval[0]));
+		if (!prepare_updater_temp_dir(params->temp_dir, force_arg->count > 0, &storage_diagnostics)) {
+			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure"
+												      : storage_diagnostics.failure_category;
+			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
+			params->startup_diagnostic = params->startup_error_reason;
+			success = false;
+			goto parse_error;
+		}
+		params->owns_temp_dir = storage_diagnostics.created;
+		params->enforce_temp_ancestors = true;
 	} else {
 		log_info("Temporary directory not provided.");
 
-		params->temp_dir = fetch_default_temp_dir();
+		params->temp_dir = create_default_updater_temp_dir(&storage_diagnostics);
 
 		if (params->temp_dir.empty()) {
-			log_info("Generated temporary directory failed");
+			params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure"
+												      : storage_diagnostics.failure_category;
+			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
+			params->startup_diagnostic = params->startup_error_reason;
 			success = false;
 			goto parse_error;
-		} else {
-			log_info("Generated temporary directory: %s", params->temp_dir.c_str());
 		}
+		params->owns_temp_dir = true;
+		params->enforce_temp_ancestors = false;
 	}
+	if (!acquire_updater_run_lock(params->temp_dir, &params->temp_dir_lock, &storage_diagnostics)) {
+		params->startup_error_category = storage_diagnostics.failure_category.empty() ? "UpdaterStorageFailure" : storage_diagnostics.failure_category;
+		params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
+		params->startup_diagnostic = params->startup_error_reason;
+		success = false;
+		goto parse_error;
+	}
+	params->cleanup_temp_dir_lock = true;
+	if (!storage_diagnostics.ancestor_warning.empty()) {
+		params->storage_ancestor_warning = ConvertToUtf8(storage_diagnostics.ancestor_warning);
+		params->startup_diagnostic = params->storage_ancestor_warning;
+	}
+	if (!storage_diagnostics.root_replaced_reason.empty())
+		params->storage_root_replaced = ConvertToUtf8(storage_diagnostics.root_replaced_reason);
+	if (!storage_diagnostics.cleanup_warning.empty())
+		params->storage_prune_warning = ConvertToUtf8(storage_diagnostics.cleanup_warning);
 
 	log_path = params->temp_dir;
 	log_path /= "slobs-updater.log";
@@ -250,21 +278,10 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	/* If we fail, we just won't get a log file unfortunately */
 	if (params->log_file)
 		log_set_fp(params->log_file);
+	wlog_info(L"Using updater storage directory: %s", params->temp_dir.c_str());
 
 	if (dump_args_arg->count > 0)
 		print_arg_table(arg_table, arg_table_types, arg_table_sz);
-
-	//if missing 'details' param ignore it
-	if (num_errors == 1 && end_arg->parent) {
-		arg_hdr *parent = (arg_hdr *)end_arg->parent[0];
-		if (parent && parent->shortopts && strcmp(parent->shortopts, "d") == 0)
-			num_errors = 0;
-	}
-
-	if (num_errors > 0) {
-		arg_print_errors(params->log_file, end_arg, argv[0]);
-		goto parse_error;
-	}
 
 	/* We have all of the required parameters
 	 * and should be able to assume they exist
@@ -291,13 +308,6 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	else
 		log_warn("The path does look like a default install path. Updater will not be able to remove files from old versions.");
 
-	params->exec.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\""));
-	params->exec_no_update.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\"") + std::string(" --skip-update"));
-
-	if (cwd_arg->count > 0) {
-		params->exec_cwd.assign(cwd_arg->sval[0]);
-	}
-
 	if (params->app_dir.empty()) {
 		log_fatal("Invalid path given for app_dir");
 		success = false;
@@ -317,22 +327,11 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	if (params->temp_dir.empty()) {
 		log_fatal("Invalid path given for temp_dir");
 		success = false;
-	} else if (fs::exists(params->temp_dir, ec)) {
-		if (force_arg->count == 0) {
-			log_fatal("Temporary directory already exists.");
-			success = false;
-		} else {
-			log_warn("Forcing temporary directory!");
-		}
 	}
 
 	params->pids = make_vector_from_arg(pids_arg);
 	params->version.assign(version_arg->sval[0]);
 	params->details.assign(details_arg->sval[0]);
-
-	if (interactive_arg->count > 0) {
-		params->interactive = interactive_arg->ival[0];
-	}
 
 	if (hook_prompt_arg->count > 0) {
 		params->hook_prompt = hook_prompt_arg->ival[0];
@@ -392,8 +391,6 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	if (!success)
 		goto parse_error;
-
-	fs::create_directory(params->temp_dir, ec);
 
 	success = true;
 

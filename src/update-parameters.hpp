@@ -8,6 +8,7 @@
 #include <filesystem>
 
 namespace fs = std::filesystem;
+struct UpdaterStorageDiagnostics;
 
 /* We want this to be C compatible eventually */
 struct update_parameters {
@@ -25,6 +26,17 @@ struct update_parameters {
 	std::string version;
 	fs::path log_file_path;
 	FILE *log_file = nullptr;
+	void *temp_dir_lock = nullptr;
+	bool cleanup_temp_dir_lock = false;
+	std::string startup_error_category;
+	std::string startup_error_reason;
+	std::string startup_diagnostic;
+	std::string storage_ancestor_warning;
+	std::string storage_root_replaced;
+	std::string storage_prune_warning;
+	bool owns_temp_dir = false;
+	bool retain_temp_dir = false;
+	bool enforce_temp_ancestors = true;
 	bool interactive = true;
 	/* Whether a process holding the graphics hook directory open is worth
 	 * stopping the user over. Off still repairs and still reports; it only
@@ -34,9 +46,6 @@ struct update_parameters {
 	bool enable_removing_old_files = false;
 	std::string details;
 
-	~update_parameters()
-	{
-		if (log_file)
-			fclose(log_file);
-	}
+	bool cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics = nullptr);
+	~update_parameters();
 };
