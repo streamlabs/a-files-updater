@@ -17,6 +17,7 @@
 #include <aclapi.h>
 #include <sddl.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -333,6 +334,100 @@ void updater_directory_rejects_a_reparse_point(const fs::path &scratch)
 
 	CHECK(!prepare_updater_temp_dir(temp_dir, true));
 	CHECK(file_exists(elsewhere / L"planted.dll"));
+}
+
+void updater_root_is_resolved_from_programdata(const fs::path &scratch)
+{
+	Case c(scratch, "updater_root_is_resolved_from_programdata");
+	CHECK(programdata_updater_root() == programdata_hook_dir().parent_path() / L"slobs-updater");
+}
+
+void untrusted_updater_root_is_replaced(const fs::path &scratch)
+{
+	Case c(scratch, "untrusted_updater_root_is_replaced");
+	const fs::path root = c.root / L"updater-root";
+
+	CHECK(make_untrusted(root));
+	write_file(root / L"planted.dll", "theirs");
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(prepare_updater_root(root, &diagnostics));
+	CHECK(diagnostics.root_replaced);
+	check_updater_hardened(root, __LINE__);
+	CHECK(!file_exists(root / L"planted.dll"));
+	CHECK(quarantine_exists(root));
+}
+
+void updater_root_replaces_a_file(const fs::path &scratch)
+{
+	Case c(scratch, "updater_root_replaces_a_file");
+	const fs::path root = c.root / L"updater-root";
+
+	write_file(root, "squatted");
+	CHECK(prepare_updater_root(root));
+	check_updater_hardened(root, __LINE__);
+	CHECK(quarantine_exists(root));
+}
+
+void updater_directory_rejects_a_file(const fs::path &scratch)
+{
+	Case c(scratch, "updater_directory_rejects_a_file");
+	const fs::path temp_dir = c.root / L"run";
+
+	write_file(temp_dir, "not a directory");
+	CHECK(!prepare_updater_temp_dir(temp_dir, true));
+	CHECK(file_exists(temp_dir));
+}
+
+void owned_updater_directory_is_cleaned(const fs::path &scratch)
+{
+	Case c(scratch, "owned_updater_directory_is_cleaned");
+	const fs::path temp_dir = c.root / L"run";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	write_file(temp_dir / L"payload.dll", "payload");
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
+void stale_updater_runs_are_pruned(const fs::path &scratch)
+{
+	Case c(scratch, "stale_updater_runs_are_pruned");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path abandoned = root / L"run-00000000000000000000000000000001";
+	const fs::path recovery = root / L"run-00000000000000000000000000000002";
+	const fs::path fresh = root / L"run-00000000000000000000000000000003";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(prepare_updater_temp_dir(abandoned, false));
+	CHECK(prepare_updater_temp_dir(recovery, false));
+	CHECK(prepare_updater_temp_dir(fresh, false));
+
+	std::error_code ec;
+	fs::create_directories(abandoned / L"new-files", ec);
+	fs::create_directories(recovery / L"old-files", ec);
+	fs::last_write_time(abandoned, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+	fs::last_write_time(recovery, fs::file_time_type::clock::now() - std::chrono::hours(24 * 8), ec);
+
+	prune_updater_runs(root);
+	CHECK(!file_exists(abandoned));
+	CHECK(!file_exists(recovery));
+	CHECK(file_exists(fresh));
+}
+
+void untrusted_stale_run_is_not_pruned(const fs::path &scratch)
+{
+	Case c(scratch, "untrusted_stale_run_is_not_pruned");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path run = root / L"run-00000000000000000000000000000001";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(make_untrusted(run));
+
+	std::error_code ec;
+	fs::last_write_time(run, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+	prune_updater_runs(root);
+	CHECK(file_exists(run));
 }
 
 void untrusted_directory_is_replaced(const fs::path &scratch)
@@ -743,6 +838,13 @@ int wmain(int argc, wchar_t **argv)
 	updater_directory_accepts_a_creation_only_parent(scratch);
 	updater_directory_rejects_non_normal_paths(scratch);
 	updater_directory_rejects_a_reparse_point(scratch);
+	updater_root_is_resolved_from_programdata(scratch);
+	untrusted_updater_root_is_replaced(scratch);
+	updater_root_replaces_a_file(scratch);
+	updater_directory_rejects_a_file(scratch);
+	owned_updater_directory_is_cleaned(scratch);
+	stale_updater_runs_are_pruned(scratch);
+	untrusted_stale_run_is_not_pruned(scratch);
 	untrusted_directory_is_replaced(scratch);
 	secured_directory_is_left_alone(scratch);
 	open_handle_blocks_quarantine(scratch);

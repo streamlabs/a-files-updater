@@ -43,6 +43,7 @@ FileUpdater::~FileUpdater()
 	std::error_code ec;
 
 	if (m_keep_old_files) {
+		m_update_client->params->retain_temp_dir = true;
 		wlog_warn(L"Keeping backup folder after failed revert: %s", m_old_files_dir.c_str());
 		return;
 	}

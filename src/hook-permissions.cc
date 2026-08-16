@@ -1,5 +1,3 @@
-#define _CRT_RAND_S
-
 #include "hook-permissions.hpp"
 
 #include <windows.h>
@@ -15,6 +13,7 @@
 
 #include "crash-reporter.hpp"
 #include "logger/log.h"
+#include "security-random.hpp"
 
 namespace {
 
@@ -269,20 +268,15 @@ bool enable_privilege(const wchar_t *name)
 
 fs::path quarantine_name(const fs::path &dir)
 {
-	static const wchar_t digits[] = L"0123456789abcdef";
-	unsigned int word = 0;
-
-	/* zeroed on failure, which would leave us a fixed name */
-	if (rand_s(&word) != 0) {
+	const std::wstring suffix = security_random_hex(1);
+	if (suffix.empty()) {
 		log_warn("Could not name a quarantine directory: no randomness available");
 		return {};
 	}
 
 	fs::path name = dir;
 	name += L".quarantine";
-
-	for (int shift = 28; shift >= 0; shift -= 4)
-		name += digits[(word >> shift) & 0xF];
+	name += suffix;
 
 	return name;
 }

@@ -143,6 +143,7 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 
 	bool success = true;
 	fs::path log_path;
+	UpdaterStorageDiagnostics storage_diagnostics;
 
 	struct arg_lit *help_arg = arg_lit0("h", "help", "Print information about this program");
 
@@ -198,24 +199,54 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		goto success;
 	}
 
+	//if missing 'details' param ignore it
+	if (num_errors == 1 && end_arg->parent) {
+		arg_hdr *parent = (arg_hdr *)end_arg->parent[0];
+		if (parent && parent->shortopts && strcmp(parent->shortopts, "d") == 0)
+			num_errors = 0;
+	}
+
+	if (num_errors > 0) {
+		arg_print_errors(stderr, end_arg, argv[0]);
+		goto parse_error;
+	}
+
+	/* Storage setup can fail before the normal log exists. Preserve enough of
+	 * the valid command line to restart Desktop without attempting an update. */
+	params->exec.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\""));
+	params->exec_no_update.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\"") + std::string(" --skip-update"));
+	if (cwd_arg->count > 0)
+		params->exec_cwd.assign(cwd_arg->sval[0]);
+	if (interactive_arg->count > 0)
+		params->interactive = interactive_arg->ival[0];
+
 	if (temp_dir_arg->count > 0) {
 		params->temp_dir = fetch_path(temp_dir_arg->sval[0], strlen(temp_dir_arg->sval[0]));
-		if (!prepare_updater_temp_dir(params->temp_dir, force_arg->count > 0)) {
+		if (!prepare_updater_temp_dir(params->temp_dir, force_arg->count > 0, &storage_diagnostics)) {
+			params->startup_error_category = "UpdaterStorageFailure";
+			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
+			params->startup_diagnostic = params->startup_error_reason;
 			success = false;
 			goto parse_error;
 		}
+		params->owns_temp_dir = storage_diagnostics.created;
 	} else {
 		log_info("Temporary directory not provided.");
 
-		params->temp_dir = create_default_updater_temp_dir();
+		params->temp_dir = create_default_updater_temp_dir(&storage_diagnostics);
 
 		if (params->temp_dir.empty()) {
-			log_info("Generated temporary directory failed");
+			params->startup_error_category = "UpdaterStorageFailure";
+			params->startup_error_reason = ConvertToUtf8(storage_diagnostics.failure);
+			params->startup_diagnostic = params->startup_error_reason;
 			success = false;
 			goto parse_error;
-		} else {
-			log_info("Generated temporary directory: %s", params->temp_dir.c_str());
 		}
+		params->owns_temp_dir = true;
+	}
+	if (!storage_diagnostics.ancestor_warning.empty()) {
+		params->storage_ancestor_warning = ConvertToUtf8(storage_diagnostics.ancestor_warning);
+		params->startup_diagnostic = params->storage_ancestor_warning;
 	}
 
 	log_path = params->temp_dir;
@@ -227,21 +258,10 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 	/* If we fail, we just won't get a log file unfortunately */
 	if (params->log_file)
 		log_set_fp(params->log_file);
+	wlog_info(L"Using updater storage directory: %s", params->temp_dir.c_str());
 
 	if (dump_args_arg->count > 0)
 		print_arg_table(arg_table, arg_table_types, arg_table_sz);
-
-	//if missing 'details' param ignore it
-	if (num_errors == 1 && end_arg->parent) {
-		arg_hdr *parent = (arg_hdr *)end_arg->parent[0];
-		if (parent && parent->shortopts && strcmp(parent->shortopts, "d") == 0)
-			num_errors = 0;
-	}
-
-	if (num_errors > 0) {
-		arg_print_errors(params->log_file, end_arg, argv[0]);
-		goto parse_error;
-	}
 
 	/* We have all of the required parameters
 	 * and should be able to assume they exist
@@ -267,13 +287,6 @@ bool su_parse_command_line(int argc, char **argv, struct update_parameters *para
 		log_warn("The path does look like a default install path. Updater be able to remove files from old versions.");
 	else
 		log_warn("The path does look like a default install path. Updater will not be able to remove files from old versions.");
-
-	params->exec.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\""));
-	params->exec_no_update.assign(std::string("\"") + std::string(exec_arg->sval[0]) + std::string("\"") + std::string(" --skip-update"));
-
-	if (cwd_arg->count > 0) {
-		params->exec_cwd.assign(cwd_arg->sval[0]);
-	}
 
 	if (params->app_dir.empty()) {
 		log_fatal("Invalid path given for app_dir");

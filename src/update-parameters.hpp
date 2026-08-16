@@ -25,6 +25,12 @@ struct update_parameters {
 	std::string version;
 	fs::path log_file_path;
 	FILE *log_file = nullptr;
+	std::string startup_error_category;
+	std::string startup_error_reason;
+	std::string startup_diagnostic;
+	std::string storage_ancestor_warning;
+	bool owns_temp_dir = false;
+	bool retain_temp_dir = false;
 	bool interactive = true;
 	/* Whether a process holding the graphics hook directory open is worth
 	 * stopping the user over. Off still repairs and still reports; it only
@@ -34,9 +40,5 @@ struct update_parameters {
 	bool enable_removing_old_files = false;
 	std::string details;
 
-	~update_parameters()
-	{
-		if (log_file)
-			fclose(log_file);
-	}
+	~update_parameters();
 };
