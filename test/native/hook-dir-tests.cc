@@ -149,7 +149,7 @@ void check_updater_hardened(const fs::path &path, int line)
 	const std::wstring sddl = read_sddl(path);
 
 	check(sddl.rfind(L"O:BA", 0) == 0, "owner is Administrators", line);
-	check(sddl.find(L"PAI") != std::wstring::npos, "DACL is protected from inheritance", line);
+	check(sddl.find(L"D:P") != std::wstring::npos, "DACL is protected from inheritance", line);
 	check(sddl.find(L";;;BU") == std::wstring::npos, "Users have no access", line);
 	check(sddl.find(current_user_sid()) == std::wstring::npos, "current user has no ACE", line);
 }
