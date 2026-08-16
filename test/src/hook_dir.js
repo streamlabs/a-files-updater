@@ -18,6 +18,7 @@ const path = require('path');
 const cp = require('child_process');
 
 const scratch_root = path.join(process.env.ProgramData || 'C:\\ProgramData', 'slobs-hook-tests', 'e2e');
+const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
 
 let holder_process = null;
 
@@ -25,7 +26,7 @@ exports.hook_dir = path.join(scratch_root, 'obs-studio-hook');
 
 function elevated() {
   try {
-    cp.execFileSync('net.exe', ['session'], { stdio: 'ignore' });
+    cp.execFileSync(path.join(system32, 'net.exe'), ['session'], { stdio: 'ignore' });
     return true;
   } catch (e) {
     return false;
@@ -37,7 +38,7 @@ function run(file, args) {
     cp.execFileSync(file, args, { stdio: 'ignore' });
     return true;
   } catch (e) {
-    console.log('Failed: ' + file + ' ' + args.join(' '));
+    console.log('Failed: ' + JSON.stringify([file, ...args]));
     return false;
   }
 }
@@ -46,7 +47,10 @@ function run(file, args) {
  * standard user, which is what makes the repair replace it rather than fix it
  * in place. */
 function make_untrusted(dir) {
-  return run('takeown.exe', ['/f', dir]) && run('icacls.exe', [dir, '/grant', '*S-1-5-32-545:(OI)(CI)F']);
+  return (
+    run(path.join(system32, 'takeown.exe'), ['/f', dir]) &&
+    run(path.join(system32, 'icacls.exe'), [dir, '/grant', '*S-1-5-32-545:(OI)(CI)F'])
+  );
 }
 
 /* mkdirpSync leaves every directory it creates owned by whoever is running
@@ -56,8 +60,8 @@ function make_untrusted(dir) {
  * chain the parser demands is the chain this tree actually has. */
 function harden_ancestor(dir) {
   return (
-    run('takeown.exe', ['/f', dir, '/a']) &&
-    run('icacls.exe', [
+    run(path.join(system32, 'takeown.exe'), ['/f', dir, '/a']) &&
+    run(path.join(system32, 'icacls.exe'), [
       dir,
       '/inheritance:r',
       '/grant:r',
@@ -206,7 +210,7 @@ exports.prepare = function (testinfo) {
 exports.cleanup = function (testinfo) {
   if (holder_process) {
     try {
-      cp.execFileSync('taskkill.exe', ['/pid', String(holder_process.pid), '/t', '/f'], {
+      cp.execFileSync(path.join(system32, 'taskkill.exe'), ['/pid', String(holder_process.pid), '/t', '/f'], {
         stdio: 'ignore',
       });
     } catch (e) {}
@@ -293,7 +297,7 @@ exports.check = async function (testinfo) {
   if (testinfo.expectedHookDirSecured !== undefined) {
     let acl = null;
     try {
-      acl = cp.execFileSync('icacls.exe', [exports.hook_dir]).toString();
+      acl = cp.execFileSync(path.join(system32, 'icacls.exe'), [exports.hook_dir]).toString();
     } catch (e) {}
 
     if (acl === null) {
