@@ -214,6 +214,20 @@ void write_file(const fs::path &path, const char *contents)
 	}
 }
 
+std::string read_file(const fs::path &path)
+{
+	FILE *file = nullptr;
+	if (_wfopen_s(&file, path.c_str(), L"rb") != 0 || !file)
+		return {};
+
+	std::string contents;
+	char buffer[256];
+	for (size_t read = 0; (read = fread(buffer, 1, sizeof(buffer), file)) != 0;)
+		contents.append(buffer, read);
+	fclose(file);
+	return contents;
+}
+
 /* What a hooked process does to the directory: a mapped DLL is open without
  * FILE_SHARE_DELETE, and no rename can take it down. */
 HANDLE hold_open(const fs::path &path)
@@ -461,6 +475,33 @@ void owned_updater_directory_is_cleaned(const fs::path &scratch)
 
 	CHECK(prepare_updater_temp_dir(temp_dir, false));
 	write_file(temp_dir / L"payload.dll", "payload");
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
+void failed_cleanup_preserves_updater_log(const fs::path &scratch)
+{
+	Case c(scratch, "failed_cleanup_preserves_updater_log");
+	const fs::path temp_dir = c.root / L"run";
+	const fs::path log = temp_dir / L"slobs-updater.log";
+	const fs::path locked = temp_dir / L"locked.dll";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	write_file(log, "diagnostic log");
+	write_file(locked, "locked");
+	HANDLE held = hold_open(locked);
+	if (held == INVALID_HANDLE_VALUE) {
+		CHECK(false);
+		return;
+	}
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(!cleanup_updater_temp_dir(temp_dir, true, &diagnostics));
+	CHECK(file_exists(log));
+	CHECK(read_file(log) == "diagnostic log");
+	CHECK(diagnostics.failure.find(L"updater log retained at") != std::wstring::npos);
+
+	CloseHandle(held);
 	CHECK(cleanup_updater_temp_dir(temp_dir));
 	CHECK(!file_exists(temp_dir));
 }
@@ -1026,6 +1067,7 @@ int wmain(int argc, wchar_t **argv)
 	blocked_updater_root_quarantine_is_distinct(scratch);
 	updater_directory_rejects_a_file(scratch);
 	owned_updater_directory_is_cleaned(scratch);
+	failed_cleanup_preserves_updater_log(scratch);
 	vanished_updater_directory_is_already_clean(scratch);
 	updater_run_lock_can_be_removed(scratch);
 	preview_ancestor_policy_is_used_for_cleanup(scratch);

@@ -8,6 +8,7 @@
 
 #include "logger/log.h"
 #include "checksum-filters.hpp"
+#include "manifest-parser.hpp"
 #include <openssl/evp.h>
 #include <boost/locale.hpp>
 #include <filesystem>
@@ -209,13 +210,18 @@ fs::path prepare_file_path(const fs::path &base, const std::string &target)
 {
 	fs::path file_path = "";
 	try {
-		file_path = base;
-
 		std::string un_urled_path = unfixup_uri(target);
-		file_path /= fs::u8path(un_urled_path.c_str());
+		fs::path requested_path = fs::u8path(un_urled_path.c_str());
+		requested_path.replace_extension();
 
-		file_path.make_preferred();
-		file_path.replace_extension();
+		std::string normalized;
+		std::string validation_error;
+		if (!normalize_manifest_path(requested_path.u8string(), normalized, validation_error)) {
+			log_error("Refusing unsafe file path %s: %s", target.c_str(), validation_error.c_str());
+			return {};
+		}
+
+		file_path = base / fs::u8path(normalized);
 
 		fs::create_directories(file_path.parent_path());
 

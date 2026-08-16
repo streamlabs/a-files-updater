@@ -44,6 +44,17 @@ This test prepare a test environment and run a debug build of updater to test wh
 
 It also test `failed usecases` in which something block/interupt update. And in that case content of folder 1 should not be changed. 
 
+## Manifest parser
+
+The parser tests do not require elevation or the integration servers. They
+cover complete-document parsing, separator normalization, duplicate aliases,
+and rejection of rooted, parent-relative, device, and malformed paths.
+
+```
+cmake --build build --target manifest-tests --config Debug
+build\Debug\manifest-tests.exe
+```
+
 ## Graphics hook directory
 
 The repair of `%ProgramData%\obs-studio-hook` is covered in two places, both of

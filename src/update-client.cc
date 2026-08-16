@@ -2,7 +2,6 @@
 #include <algorithm>
 #include <mutex>
 #include <thread>
-#include <regex>
 #include <chrono>
 
 #include <winsock2.h>
@@ -13,10 +12,6 @@
 
 #include <fstream>
 #include <iostream>
-
-using std::regex;
-using std::cmatch;
-using std::regex_search;
 
 const size_t file_buffer_size = 4096;
 
@@ -32,6 +27,7 @@ const size_t file_buffer_size = 4096;
 #include "utils.hpp"
 #include "file-updater.h"
 #include "hook-permissions.hpp"
+#include "manifest-parser.hpp"
 
 /*##############################################
  *#
@@ -725,7 +721,7 @@ void update_client::checkup_files(struct blockers_map_t &blockers, struct blocke
 					std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(), ::tolower);
 					bool mark_remove = false;
 
-					if (lower_key.find("resources/app.asar.unpacked/node_modules") == 0) {
+					if (lower_key.find("resources\\app.asar.unpacked\\node_modules\\") == 0) {
 						mark_remove = true;
 					} else {
 						fs::path kpath(key);
@@ -1109,61 +1105,18 @@ void update_client::start_downloading_files()
 	}
 }
 
-template<class ConstBuffer> static size_t handle_manifest_read_buffer(manifest_map_t &map, const ConstBuffer &buffer)
-{
-	/* TODO: Hardcoded for SHA-256 checksums. */
-	static const regex manifest_regex("([A-Fa-f0-9]{64}) ([^\r\n]+)\r?\n");
-
-	size_t accum = 0;
-
-	for (;;) {
-		const char *buf;
-		std::string checksum;
-		std::string file;
-		cmatch matches;
-		size_t buf_size = buffer.size() - accum;
-
-		/* Technically, this for loop will
-		 * always iterate once and then hit this
-		 * the second time around. */
-		if (buf_size == 0)
-			break;
-
-		buf = (const char *)buffer.data() + accum;
-
-		bool regex_result = regex_search(&buf[0], &buf[buf_size], matches, manifest_regex);
-
-		if (!regex_result) {
-			/* FIXME TODO
-			 * This should never ever happen the way
-			 * the code is currently formatted. If
-			 * this happens, either the buffers are
-			 * given incorrectly or the manifest is
-			 * malformed. This should be a fatal error.
-			 * That said, if we ever go back to dynamic
-			 * buffers, we should instead figure out
-			 * a way to store the section of the previous
-			 * buffer that we weren't able to fully parse.
-			 * Right now, we assume a singular contiguous
-			 * buffer (usually around 20kB total for a
-			 * 1000+ line manifest). */
-			break;
-		}
-
-		file.assign(matches[2].first, matches[2].length());
-		checksum.assign(matches[1].first, matches[1].length());
-		map.emplace(std::make_pair(file, manifest_entry_t(checksum)));
-
-		accum += matches.length();
-	}
-
-	return accum;
-}
-
 void update_client::handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content)
 {
-	(void)request_ctx; // held only to keep the request alive across the async hop
-	handle_manifest_read_buffer(manifest, manifest_content);
+	manifest_map_t parsed;
+	std::string parse_error;
+	if (!parse_update_manifest(manifest_content, parsed, parse_error)) {
+		const std::string message = "Invalid update manifest: " + parse_error;
+		log_error("%s", message.c_str());
+		handle_manifest_download_error(request_ctx, boost::system::errc::make_error_code(boost::system::errc::illegal_byte_sequence), message);
+		return;
+	}
+
+	manifest = std::move(parsed);
 
 	log_info("Successfuly downloaded manifest. It has info about %d files", manifest.size());
 

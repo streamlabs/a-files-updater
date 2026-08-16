@@ -23,8 +23,10 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 	if (!owns_temp_dir || retain_temp_dir || temp_dir.empty())
 		return true;
 
-	if (!cleanup_updater_temp_dir(temp_dir, enforce_temp_ancestors, diagnostics))
+	if (!cleanup_updater_temp_dir(temp_dir, enforce_temp_ancestors, diagnostics)) {
+		retain_temp_dir = true;
 		return false;
+	}
 
 	owns_temp_dir = false;
 	cleanup_temp_dir_lock = false;

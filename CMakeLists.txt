@@ -200,6 +200,28 @@ target_compile_definitions(hook-dir-tests
 	-D_CRT_SECURE_NO_WARNINGS
 )
 
+add_executable(manifest-tests
+	test/native/manifest-tests.cc
+	src/manifest-parser.cc
+)
+
+target_compile_options(manifest-tests PRIVATE $<IF:$<CONFIG:Debug>,-MTd,-MT> -W3 -Zi)
+
+set_property(TARGET manifest-tests PROPERTY CXX_STANDARD 17)
+set_property(TARGET manifest-tests PROPERTY CXX_STANDARD_REQUIRED ON)
+
+target_include_directories(manifest-tests PRIVATE src)
+
+target_compile_definitions(manifest-tests
+	PRIVATE
+	-D_WIN32_WINNT=0x0A00
+	-DWINVER=0x0A00
+	-DNOMINMAX
+	-DWIN32_LEAN_AND_MEAN
+	-DUNICODE
+	-D_UNICODE
+)
+
 # Install
 install(FILES $<TARGET_PDB_FILE:slobs-updater> DESTINATION ${CMAKE_INSTALL_PREFIX} OPTIONAL)
 
