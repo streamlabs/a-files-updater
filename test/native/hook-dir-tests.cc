@@ -240,11 +240,16 @@ bool quarantine_exists(const fs::path &dir)
 	std::error_code ec;
 	const std::wstring prefix = dir.filename().wstring() + L".quarantine";
 
-	for (const auto &entry : fs::directory_iterator(dir.parent_path(), ec)) {
+	fs::directory_iterator iter(dir.parent_path(), ec);
+	const fs::directory_iterator end;
+	while (!ec && iter != end) {
+		const fs::directory_entry &entry = *iter;
 		if (entry.path().filename().wstring().rfind(prefix, 0) == 0)
 			return true;
+		iter.increment(ec);
 	}
 
+	CHECK(!ec);
 	return false;
 }
 

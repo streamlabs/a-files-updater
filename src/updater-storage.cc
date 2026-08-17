@@ -652,6 +652,11 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 	error = GetLastError();
 	if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
 		return true;
-	set_failure(diagnostics, L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error));
+	std::wstring reason = L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error);
+	if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+		reason += L"; updater log retained at " + log.wstring();
+	else
+		reason += L"; updater log was removed before final directory cleanup";
+	set_failure(diagnostics, reason);
 	return false;
 }
