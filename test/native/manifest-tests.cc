@@ -35,12 +35,13 @@ void valid_manifest_is_normalized()
 {
 	manifest_map_t manifest;
 	std::string error;
-	const std::string content = std::string("\xef\xbb\xbf", 3) + line('A', "resources/app.asar", "\r\n") + line('b', "dir\\file 1.txt", "");
+	const std::string content = std::string("\xef\xbb\xbf", 3) + line('A', "Resources/App.Asar", "\r\n") + line('b', "dir\\file 1.txt", "");
 
 	CHECK(parse_update_manifest(content, manifest, error));
 	CHECK(error.empty());
 	CHECK(manifest.size() == 2);
 	CHECK(manifest.count("resources\\app.asar") == 1);
+	CHECK(manifest.find("RESOURCES\\APP.ASAR") != manifest.end());
 	CHECK(manifest.count("dir\\file 1.txt") == 1);
 	CHECK(manifest.at("resources\\app.asar").hash_sum == std::string(64, 'a'));
 }
@@ -94,6 +95,8 @@ void malformed_manifests_are_rejected()
 	CHECK(!parses(line('a', "File.txt") + line('b', "file.txt")));
 	CHECK(!parses(line('a', "dir/file.txt") + line('b', "dir\\file.txt")));
 	CHECK(!parses(line('a', "dir\\file.txt") + line('b', "dir\\\\file.txt")));
+	CHECK(!parses(line('a', "foo") + line('b', "foo\\bar.dll")));
+	CHECK(!parses(line('a', "Dir") + line('b', "dir\\bar.dll")));
 }
 
 void failure_does_not_publish_a_partial_manifest()

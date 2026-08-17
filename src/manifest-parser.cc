@@ -151,6 +151,14 @@ bool parse_update_manifest(const std::string &content, manifest_map_t &output, s
 			return false;
 		}
 	}
+	for (const auto &entry : parsed_paths) {
+		for (fs::path parent = entry.first.parent_path(); !parent.empty(); parent = parent.parent_path()) {
+			if (parsed.find(parent.u8string()) != parsed.end()) {
+				error = "line " + std::to_string(entry.second) + " has a parent path that is also a manifest file";
+				return false;
+			}
+		}
+	}
 
 	output = std::move(parsed);
 	return true;
