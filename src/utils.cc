@@ -8,6 +8,7 @@
 
 #include "logger/log.h"
 #include "checksum-filters.hpp"
+#include "manifest-parser.hpp"
 #include <openssl/evp.h>
 #include <boost/locale.hpp>
 #include <filesystem>
@@ -209,13 +210,18 @@ fs::path prepare_file_path(const fs::path &base, const std::string &target)
 {
 	fs::path file_path = "";
 	try {
-		file_path = base;
-
 		std::string un_urled_path = unfixup_uri(target);
-		file_path /= fs::u8path(un_urled_path.c_str());
+		fs::path requested_path = fs::u8path(un_urled_path.c_str());
+		requested_path.replace_extension();
 
-		file_path.make_preferred();
-		file_path.replace_extension();
+		std::string normalized;
+		std::string validation_error;
+		if (!normalize_manifest_path(requested_path.u8string(), normalized, validation_error)) {
+			log_error("Refusing unsafe file path %s: %s", target.c_str(), validation_error.c_str());
+			return {};
+		}
+
+		file_path = base / fs::u8path(normalized);
 
 		fs::create_directories(file_path.parent_path());
 
@@ -280,10 +286,10 @@ std::string fixup_uri(const std::string &source)
 {
 	std::string result(source);
 
-	const std::map<char, std::string> urlEncodeMap = {{' ', "%20"}, {'"', "%22"}, {'#', "%23"}, {'&', "%26"}, {'\'', "%27"}, {'(', "%28"},
-							  {')', "%29"}, {'*', "%2A"}, {'+', "%2B"}, {',', "%2C"}, {':', "%3A"},  {';', "%3B"},
-							  {'<', "%3C"}, {'=', "%3E"}, {'?', "%3F"}, {'@', "%40"}, {'[', "%5B"},  {']', "%5D"},
-							  {'^', "%5E"}, {'`', "%60"}, {'{', "%7B"}, {'|', "%7C"}, {'}', "%7D"},  {'~', "%7E"}};
+	const std::map<char, std::string> urlEncodeMap = {{' ', "%20"}, {'"', "%22"}, {'#', "%23"}, {'&', "%26"}, {'\'', "%27"}, {'(', "%28"}, {')', "%29"},
+							  {'*', "%2A"}, {'+', "%2B"}, {',', "%2C"}, {':', "%3A"}, {';', "%3B"},  {'<', "%3C"}, {'=', "%3D"},
+							  {'>', "%3E"}, {'?', "%3F"}, {'@', "%40"}, {'[', "%5B"}, {']', "%5D"},  {'^', "%5E"}, {'`', "%60"},
+							  {'{', "%7B"}, {'|', "%7C"}, {'}', "%7D"}, {'~', "%7E"}};
 	replace_all(result, "\\", "/");
 	replace_all(result, "%", "%25");
 	for (const auto &pair : urlEncodeMap) {
@@ -295,21 +301,34 @@ std::string fixup_uri(const std::string &source)
 
 std::string unfixup_uri(const std::string &source)
 {
-	std::string result(source);
+	const auto hex_value = [](unsigned char c) -> int {
+		if (c >= '0' && c <= '9')
+			return c - '0';
+		if (c >= 'A' && c <= 'F')
+			return c - 'A' + 10;
+		if (c >= 'a' && c <= 'f')
+			return c - 'a' + 10;
+		return -1;
+	};
 
-	// Map of URL-encoded strings to their character equivalents
-	const std::map<std::string, char> urlDecodeMap = {{"%20", ' '}, {"%22", '"'}, {"%23", '#'}, {"%26", '&'}, {"%27", '\''}, {"%28", '('}, {"%29", ')'},
-							  {"%2A", '*'}, {"%2B", '+'}, {"%2C", ','}, {"%3A", ':'}, {"%3B", ';'},  {"%3C", '<'}, {"%3E", '='},
-							  {"%3F", '?'}, {"%40", '@'}, {"%5B", '['}, {"%5D", ']'}, {"%5E", '^'},  {"%60", '`'}, {"%7B", '{'},
-							  {"%7C", '|'}, {"%7D", '}'}, {"%7E", '~'}, {"%25", '%'}};
-
-	// Iterating over each encoded sequence in the map
-	for (const auto &pair : urlDecodeMap) {
-		replace_all(result, pair.first, std::string(1, pair.second));
+	std::string result;
+	result.reserve(source.size());
+	for (size_t i = 0; i < source.size();) {
+		char decoded = source[i];
+		if (decoded == '%' && i + 2 < source.size()) {
+			const int high = hex_value(static_cast<unsigned char>(source[i + 1]));
+			const int low = hex_value(static_cast<unsigned char>(source[i + 2]));
+			if (high >= 0 && low >= 0) {
+				decoded = static_cast<char>((high << 4) | low);
+				i += 3;
+			} else {
+				i++;
+			}
+		} else {
+			i++;
+		}
+		result.push_back(decoded == '/' ? '\\' : decoded);
 	}
-
-	// Replacing encoded backslash
-	replace_all(result, "/", "\\");
 
 	return result;
 }

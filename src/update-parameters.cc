@@ -33,5 +33,12 @@ bool update_parameters::cleanup_temp_dir(UpdaterStorageDiagnostics *diagnostics)
 
 update_parameters::~update_parameters()
 {
-	cleanup_temp_dir();
+	if (cleanup_failure_reported)
+		return;
+
+	try {
+		cleanup_temp_dir();
+	} catch (...) {
+		wlog_warn(L"Unexpected exception while cleaning updater storage during shutdown");
+	}
 }

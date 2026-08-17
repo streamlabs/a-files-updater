@@ -1,20 +1,20 @@
 #include "update-client-internal.hpp"
 
 #include "file-updater.h"
+#include "file-updater-paths.hpp"
 
 #include "logger/log.h"
 #include <aclapi.h>
-#include <unordered_map>
+#include <map>
 #include <vector>
 
 namespace {
 
-using checksum_map_t = std::unordered_map<std::wstring, std::string>;
+using checksum_map_t = std::map<std::wstring, std::string, windows_wpath_less>;
 
 checksum_map_t build_local_checksums(const local_manifest_t &local_manifest)
 {
 	checksum_map_t checksums;
-	checksums.reserve(local_manifest.size());
 	for (const auto &entry : local_manifest) {
 		fs::path path = entry.first;
 		path.make_preferred();
@@ -23,7 +23,6 @@ checksum_map_t build_local_checksums(const local_manifest_t &local_manifest)
 
 	return checksums;
 }
-
 } // namespace
 
 FileUpdater::FileUpdater(fs::path old_files_dir, fs::path app_dir, fs::path new_files_dir, const manifest_map_t &manifest,
@@ -58,15 +57,15 @@ void FileUpdater::update()
 {
 	std::string version_file_key = "resources\\app.asar";
 	manifest_map_t::const_iterator iter = m_manifest.begin();
+	manifest_map_t::const_iterator version_file = m_manifest.find(version_file_key);
 
 	while (iter != m_manifest.end()) {
-		if (version_file_key.compare(iter->first) != 0) {
+		if (iter != version_file) {
 			update_entry_with_retries(iter, m_new_files_dir);
 		}
 		++iter;
 	}
 
-	manifest_map_t::const_iterator version_file = m_manifest.find(version_file_key);
 	if (version_file != m_manifest.end()) {
 		update_entry_with_retries(version_file, m_new_files_dir);
 	} else {
@@ -254,10 +253,11 @@ void FileUpdater::revert()
 	for (const auto &entry : revert_entries) {
 		const fs::path &to_path = entry.to_path;
 
-		fs::remove(to_path, ec);
-		if (ec) {
-			wlog_warn(L"Revert have failed to correctly remove changed file: %s ", to_path.c_str());
+		if (!remove_revert_destination(to_path, ec)) {
+			std::wstring wmsg = ConvertToUtf16WS(ec.message());
+			wlog_warn(L"Revert have failed to correctly remove changed path: %s, error %s", to_path.c_str(), wmsg.c_str());
 			error_count++;
+			continue;
 		}
 
 		fs::rename(entry.from_path, to_path, ec);
@@ -363,10 +363,16 @@ bool FileUpdater::is_local_files_updated()
 		to_path /= file_name_part;
 
 		if (iter->second.remove_at_update) {
-			if (fs::exists(to_path, ec)) {
-				wlog_error(L"File %s still not exist after update, something went wrong", to_path.c_str());
+			const fs::file_status status = fs::symlink_status(to_path, ec);
+			if (ec && ec != std::errc::no_such_file_or_directory) {
+				wlog_error(L"Could not verify removed file %s after update: %s", to_path.c_str(), ConvertToUtf16WS(ec.message()).c_str());
 				return false;
 			}
+			if (!ec && fs::exists(status) && !fs::is_directory(status)) {
+				wlog_error(L"File %s still exists after update, something went wrong", to_path.c_str());
+				return false;
+			}
+			continue;
 		}
 
 		std::string checksum = calculate_files_checksum_safe(to_path);

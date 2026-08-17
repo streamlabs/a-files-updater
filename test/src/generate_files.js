@@ -356,7 +356,7 @@ async function generate_initial_dir(testinfo, update_subdirpath = "") {
 
     }
 
-    await generate_file(update_subdirpath, file.name, filecontentextended, fileempty, file.hugefile);
+    await generate_file(update_subdirpath, file.initialName || file.name, filecontentextended, fileempty, file.hugefile);
   }
 
   if (false) {
