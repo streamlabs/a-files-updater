@@ -103,6 +103,8 @@ struct windows_path_less {
 		const fs::path left_path = fs::u8path(left);
 		const fs::path right_path = fs::u8path(right);
 		const int result = CompareStringOrdinal(left_path.c_str(), -1, right_path.c_str(), -1, TRUE);
+		/* Zero means the comparison failed, not equality. Keep ordering strict
+		 * if an invalid key ever reaches this otherwise validated map. */
 		return result == CSTR_LESS_THAN || (result == 0 && left < right);
 	}
 };

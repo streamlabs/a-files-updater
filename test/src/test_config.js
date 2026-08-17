@@ -99,6 +99,8 @@ exports.gettestinfo = function (testname) {
     { name: "budget_plan(Q3&Q4).xlsx", hugefile: false, testing: "created" },
     { name: "team_meeting_01_10_2023.mp4", hugefile: true, testing: "created" },
     { name: "product_launch@2024.png", hugefile: false, testing: "created" },
+    { name: "literal%26name.txt", hugefile: false, testing: "created" },
+    { name: "equals=name.txt", hugefile: false, testing: "created" },
     { name: "dir/ccache-clang++.sh", hugefile: false, testing: "created" },
     { name: "user-guide_v2.0#updated.pdf", hugefile: false, testing: "created" },
     { name: "file3.jpeg", hugefile: false, testing: "same" },

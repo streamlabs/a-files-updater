@@ -4,17 +4,24 @@
 
 #include "logger/log.h"
 #include <aclapi.h>
-#include <unordered_map>
+#include <map>
 #include <vector>
 
 namespace {
 
-using checksum_map_t = std::unordered_map<std::wstring, std::string>;
+struct windows_wpath_less {
+	bool operator()(const std::wstring &left, const std::wstring &right) const
+	{
+		const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+		return result == CSTR_LESS_THAN || (result == 0 && left < right);
+	}
+};
+
+using checksum_map_t = std::map<std::wstring, std::string, windows_wpath_less>;
 
 checksum_map_t build_local_checksums(const local_manifest_t &local_manifest)
 {
 	checksum_map_t checksums;
-	checksums.reserve(local_manifest.size());
 	for (const auto &entry : local_manifest) {
 		fs::path path = entry.first;
 		path.make_preferred();

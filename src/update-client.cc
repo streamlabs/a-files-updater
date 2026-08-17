@@ -733,7 +733,8 @@ void update_client::checkup_files(struct blockers_map_t &blockers, struct blocke
 					std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(), ::tolower);
 					bool mark_remove = false;
 
-					if (lower_key.find("resources\\app.asar.unpacked\\node_modules\\") == 0) {
+					if (lower_key == "resources\\app.asar.unpacked\\node_modules" ||
+					    lower_key.find("resources\\app.asar.unpacked\\node_modules\\") == 0) {
 						mark_remove = true;
 					} else {
 						fs::path kpath(key);

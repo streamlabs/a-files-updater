@@ -153,7 +153,10 @@ bool parse_update_manifest(const std::string &content, manifest_map_t &output, s
 	}
 	for (const auto &entry : parsed_paths) {
 		for (fs::path parent = entry.first.parent_path(); !parent.empty(); parent = parent.parent_path()) {
-			if (parsed.find(parent.u8string()) != parsed.end()) {
+			auto found = std::lower_bound(parsed_paths.begin(), parsed_paths.end(), parent, [](const auto &candidate, const fs::path &value) {
+				return compare_windows_paths(candidate.first, value) == CSTR_LESS_THAN;
+			});
+			if (found != parsed_paths.end() && compare_windows_paths(found->first, parent) == CSTR_EQUAL) {
 				error = "line " + std::to_string(entry.second) + " has a parent path that is also a manifest file";
 				return false;
 			}
