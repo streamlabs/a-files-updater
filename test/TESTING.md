@@ -55,6 +55,16 @@ cmake --build build --target manifest-tests --config Debug
 build\Debug\manifest-tests.exe
 ```
 
+Rollback destination handling has a separate native test. It covers missing,
+file, directory, and directory-symlink destinations and does not require
+elevation when Windows Developer Mode permits symlink creation. Otherwise, the
+symlink case is skipped.
+
+```
+cmake --build build --target file-updater-path-tests --config Debug
+build\Debug\file-updater-path-tests.exe
+```
+
 ## Graphics hook directory
 
 The repair of `%ProgramData%\obs-studio-hook` is covered in two places, both of

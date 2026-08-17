@@ -222,6 +222,28 @@ target_compile_definitions(manifest-tests
 	-D_UNICODE
 )
 
+add_executable(file-updater-path-tests
+	test/native/file-updater-path-tests.cc
+	src/file-updater-paths.cc
+)
+
+target_compile_options(file-updater-path-tests PRIVATE $<IF:$<CONFIG:Debug>,-MTd,-MT> -W3 -Zi)
+
+set_property(TARGET file-updater-path-tests PROPERTY CXX_STANDARD 17)
+set_property(TARGET file-updater-path-tests PROPERTY CXX_STANDARD_REQUIRED ON)
+
+target_include_directories(file-updater-path-tests PRIVATE src)
+
+target_compile_definitions(file-updater-path-tests
+	PRIVATE
+	-D_WIN32_WINNT=0x0A00
+	-DWINVER=0x0A00
+	-DNOMINMAX
+	-DWIN32_LEAN_AND_MEAN
+	-DUNICODE
+	-D_UNICODE
+)
+
 # Install
 install(FILES $<TARGET_PDB_FILE:slobs-updater> DESTINATION ${CMAKE_INSTALL_PREFIX} OPTIONAL)
 

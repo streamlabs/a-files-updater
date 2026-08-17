@@ -1,6 +1,7 @@
 #include "update-client-internal.hpp"
 
 #include "file-updater.h"
+#include "file-updater-paths.hpp"
 
 #include "logger/log.h"
 #include <aclapi.h>
@@ -22,29 +23,6 @@ checksum_map_t build_local_checksums(const local_manifest_t &local_manifest)
 
 	return checksums;
 }
-
-bool remove_revert_destination(const fs::path &path, std::error_code &ec)
-{
-	ec.clear();
-	const fs::file_status status = fs::symlink_status(path, ec);
-	if (ec == std::errc::no_such_file_or_directory) {
-		ec.clear();
-		return true;
-	}
-	if (ec) {
-		return false;
-	}
-
-	/* Recurse only into a real directory; remove reparse points as leaf entries. */
-	if (fs::is_directory(status)) {
-		fs::remove_all(path, ec);
-	} else {
-		fs::remove(path, ec);
-	}
-
-	return !ec;
-}
-
 } // namespace
 
 FileUpdater::FileUpdater(fs::path old_files_dir, fs::path app_dir, fs::path new_files_dir, const manifest_map_t &manifest,
