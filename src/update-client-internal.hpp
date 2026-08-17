@@ -144,6 +144,7 @@ public:
 	void handle_manifest_download_error(std::shared_ptr<manifest_request<manifest_body>> request_ctx, const boost::system::error_code &error,
 					    const std::string &str);
 	void handle_manifest_download_canceled(std::shared_ptr<manifest_request<manifest_body>> request_ctx);
+	void handle_manifest_content_error(const std::string &str);
 
 	//manifest
 	void handle_resolve(const boost::system::error_code &error, resolver_type::results_type results);

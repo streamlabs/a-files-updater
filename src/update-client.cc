@@ -2,21 +2,17 @@
 #include <algorithm>
 #include <mutex>
 #include <thread>
-#include <regex>
 #include <chrono>
 
 #include <winsock2.h>
 
 #include <fmt/format.h>
+#include <set>
 #include <unordered_set>
 #include <aclapi.h>
 
 #include <fstream>
 #include <iostream>
-
-using std::regex;
-using std::cmatch;
-using std::regex_search;
 
 const size_t file_buffer_size = 4096;
 
@@ -32,6 +28,7 @@ const size_t file_buffer_size = 4096;
 #include "utils.hpp"
 #include "file-updater.h"
 #include "hook-permissions.hpp"
+#include "manifest-parser.hpp"
 
 /*##############################################
  *#
@@ -240,6 +237,18 @@ void update_client::handle_manifest_download_canceled(std::shared_ptr<manifest_r
 {
 	(void)request_ctx; // keep-alive only
 	handle_network_error(download_abort_error, download_abort_message);
+}
+
+void update_client::handle_manifest_content_error(const std::string &str)
+{
+	std::lock_guard<std::mutex> lock(handle_error_mutex);
+	update_download_aborted = true;
+
+	const std::string error = boost::locale::translate(
+		"Streamlabs Desktop received invalid update information and will launch the current version instead.\n\nThe update will try again later. If this issue persists then please download a new installer from www.streamlabs.com");
+	client_events->error(error, "UpdateFailure", "Invalid update manifest");
+	log_error("%s", str.c_str());
+	reset_work_threads_guards();
 }
 
 void update_client::handle_resolve(const boost::system::error_code &error, resolver_type::results_type results)
@@ -725,7 +734,8 @@ void update_client::checkup_files(struct blockers_map_t &blockers, struct blocke
 					std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(), ::tolower);
 					bool mark_remove = false;
 
-					if (lower_key.find("resources/app.asar.unpacked/node_modules") == 0) {
+					if (lower_key == "resources\\app.asar.unpacked\\node_modules" ||
+					    lower_key.find("resources\\app.asar.unpacked\\node_modules\\") == 0) {
 						mark_remove = true;
 					} else {
 						fs::path kpath(key);
@@ -769,12 +779,17 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 {
 	int max_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
 
-	std::unordered_set<std::string> seen_paths;
+	std::set<std::wstring, windows_wpath_less> seen_paths;
 
 	// Seed from existing entries so we do not add duplicates on re-entrant calls
 	// (e.g. when process_manifest_results is called repeatedly while waiting for blockers)
 	for (const auto &entry_pair : local_manifest) {
-		seen_paths.insert(entry_pair.first.u8string());
+		const std::wstring path = entry_pair.first.native();
+		auto inserted = seen_paths.insert(path);
+		if (!inserted.second && inserted.first->compare(path) != 0) {
+			wlog_error(L"Case-colliding application paths are unsupported: %s and %s", inserted.first->c_str(), path.c_str());
+			throw std::runtime_error("Case-colliding application paths are unsupported");
+		}
 	}
 
 	/* Generate the manifest for the current application directory */
@@ -792,7 +807,13 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		if (fs::is_directory(entry_status))
 			continue;
 
-		if (!seen_paths.emplace(std::move(entry.u8string())).second)
+		const std::wstring path = entry.native();
+		auto inserted = seen_paths.insert(path);
+		if (!inserted.second && inserted.first->compare(path) != 0) {
+			wlog_error(L"Case-colliding application paths are unsupported: %s and %s", inserted.first->c_str(), path.c_str());
+			throw std::runtime_error("Case-colliding application paths are unsupported");
+		}
+		if (!inserted.second)
 			continue;
 
 		local_manifest.emplace_back(entry, std::string(""));
@@ -1109,61 +1130,18 @@ void update_client::start_downloading_files()
 	}
 }
 
-template<class ConstBuffer> static size_t handle_manifest_read_buffer(manifest_map_t &map, const ConstBuffer &buffer)
-{
-	/* TODO: Hardcoded for SHA-256 checksums. */
-	static const regex manifest_regex("([A-Fa-f0-9]{64}) ([^\r\n]+)\r?\n");
-
-	size_t accum = 0;
-
-	for (;;) {
-		const char *buf;
-		std::string checksum;
-		std::string file;
-		cmatch matches;
-		size_t buf_size = buffer.size() - accum;
-
-		/* Technically, this for loop will
-		 * always iterate once and then hit this
-		 * the second time around. */
-		if (buf_size == 0)
-			break;
-
-		buf = (const char *)buffer.data() + accum;
-
-		bool regex_result = regex_search(&buf[0], &buf[buf_size], matches, manifest_regex);
-
-		if (!regex_result) {
-			/* FIXME TODO
-			 * This should never ever happen the way
-			 * the code is currently formatted. If
-			 * this happens, either the buffers are
-			 * given incorrectly or the manifest is
-			 * malformed. This should be a fatal error.
-			 * That said, if we ever go back to dynamic
-			 * buffers, we should instead figure out
-			 * a way to store the section of the previous
-			 * buffer that we weren't able to fully parse.
-			 * Right now, we assume a singular contiguous
-			 * buffer (usually around 20kB total for a
-			 * 1000+ line manifest). */
-			break;
-		}
-
-		file.assign(matches[2].first, matches[2].length());
-		checksum.assign(matches[1].first, matches[1].length());
-		map.emplace(std::make_pair(file, manifest_entry_t(checksum)));
-
-		accum += matches.length();
-	}
-
-	return accum;
-}
-
 void update_client::handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content)
 {
-	(void)request_ctx; // held only to keep the request alive across the async hop
-	handle_manifest_read_buffer(manifest, manifest_content);
+	(void)request_ctx;
+	manifest_map_t parsed;
+	std::string parse_error;
+	if (!parse_update_manifest(manifest_content, parsed, parse_error)) {
+		const std::string message = "Invalid update manifest: " + parse_error;
+		handle_manifest_content_error(message);
+		return;
+	}
+
+	manifest = std::move(parsed);
 
 	log_info("Successfuly downloaded manifest. It has info about %d files", manifest.size());
 

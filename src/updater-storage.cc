@@ -18,6 +18,7 @@ namespace {
 
 const wchar_t *const kUpdaterDirSddl = L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 const wchar_t *const kRunLockName = L".run-lock";
+const wchar_t *const kUpdaterLogName = L"slobs-updater.log";
 constexpr auto kAbandonedRunAge = std::chrono::hours(24);
 constexpr auto kRecoveryRunAge = std::chrono::hours(24 * 7);
 
@@ -592,11 +593,70 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		return false;
 	}
 
+	const fs::path log = dir / kUpdaterLogName;
+	std::vector<fs::path> children;
 	std::error_code ec;
-	fs::remove_all(dir, ec);
+	fs::directory_iterator iter(dir, ec);
+	const fs::directory_iterator end;
+	while (!ec && iter != end) {
+		const fs::directory_entry &entry = *iter;
+		if (entry.path().filename() != kUpdaterLogName)
+			children.push_back(entry.path());
+		iter.increment(ec);
+	}
 	if (ec) {
-		set_failure(diagnostics, L"Failed to clean updater run " + dir.wstring() + L": " + format_hex32(ec.value()));
+		if (missing())
+			return true;
+		set_failure(diagnostics, L"Failed to enumerate updater run " + dir.wstring() + L": " + format_hex32(ec.value()));
 		return false;
 	}
-	return true;
+
+	for (const fs::path &child : children) {
+		ec.clear();
+		fs::remove_all(child, ec);
+		if (ec) {
+			std::wstring reason = L"Failed to clean updater run " + dir.wstring() + L": " + format_hex32(ec.value());
+			if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+				reason += L"; updater log retained at " + log.wstring();
+			set_failure(diagnostics, reason);
+			return false;
+		}
+	}
+
+	if (RemoveDirectoryW(dir.c_str()))
+		return true;
+
+	DWORD error = GetLastError();
+	if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+		return true;
+	if (error != ERROR_DIR_NOT_EMPTY) {
+		std::wstring reason = L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error);
+		if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+			reason += L"; updater log retained at " + log.wstring();
+		set_failure(diagnostics, reason);
+		return false;
+	}
+
+	if (!DeleteFileW(log.c_str())) {
+		error = GetLastError();
+		if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+			set_failure(diagnostics, L"Failed to remove updater log " + log.wstring() + L": " + format_hex32(error) +
+							 L"; updater log retained at " + log.wstring());
+			return false;
+		}
+	}
+
+	if (RemoveDirectoryW(dir.c_str()))
+		return true;
+
+	error = GetLastError();
+	if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+		return true;
+	std::wstring reason = L"Failed to remove cleaned updater run " + dir.wstring() + L": " + format_hex32(error);
+	if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+		reason += L"; updater log retained at " + log.wstring();
+	else
+		reason += L"; updater log was removed before final directory cleanup";
+	set_failure(diagnostics, reason);
+	return false;
 }

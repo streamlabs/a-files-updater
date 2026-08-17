@@ -36,6 +36,7 @@ struct update_parameters {
 	std::string storage_prune_warning;
 	bool owns_temp_dir = false;
 	bool retain_temp_dir = false;
+	bool cleanup_failure_reported = false;
 	bool enforce_temp_ancestors = true;
 	bool interactive = true;
 	/* Whether a process holding the graphics hook directory open is worth

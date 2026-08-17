@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <filesystem>
+#include <map>
 #include <unordered_map>
 #include <vector>
 #include <string>
@@ -96,5 +97,22 @@ struct manifest_entry_t {
 	manifest_entry_t(std::string &file_hash_sum) : hash_sum(file_hash_sum), compared_to_local(false), remove_at_update(false), skip_update(false) {}
 };
 
-using manifest_map_t = std::unordered_map<std::string, manifest_entry_t>;
+struct windows_wpath_less {
+	bool operator()(const std::wstring &left, const std::wstring &right) const
+	{
+		const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+		/* Zero means the comparison failed, not equality. Keep ordering strict
+		 * if an invalid key ever reaches this otherwise validated map. */
+		return result == CSTR_LESS_THAN || (result == 0 && left < right);
+	}
+};
+
+struct windows_path_less {
+	bool operator()(const std::string &left, const std::string &right) const
+	{
+		return windows_wpath_less{}(fs::u8path(left).native(), fs::u8path(right).native());
+	}
+};
+
+using manifest_map_t = std::map<std::string, manifest_entry_t, windows_path_less>;
 using local_manifest_t = std::vector<std::pair<fs::path, std::string>>;
