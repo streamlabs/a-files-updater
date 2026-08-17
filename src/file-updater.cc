@@ -58,15 +58,15 @@ void FileUpdater::update()
 {
 	std::string version_file_key = "resources\\app.asar";
 	manifest_map_t::const_iterator iter = m_manifest.begin();
+	manifest_map_t::const_iterator version_file = m_manifest.find(version_file_key);
 
 	while (iter != m_manifest.end()) {
-		if (version_file_key.compare(iter->first) != 0) {
+		if (iter != version_file) {
 			update_entry_with_retries(iter, m_new_files_dir);
 		}
 		++iter;
 	}
 
-	manifest_map_t::const_iterator version_file = m_manifest.find(version_file_key);
 	if (version_file != m_manifest.end()) {
 		update_entry_with_retries(version_file, m_new_files_dir);
 	} else {
