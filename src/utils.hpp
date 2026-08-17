@@ -97,15 +97,20 @@ struct manifest_entry_t {
 	manifest_entry_t(std::string &file_hash_sum) : hash_sum(file_hash_sum), compared_to_local(false), remove_at_update(false), skip_update(false) {}
 };
 
-struct windows_path_less {
-	bool operator()(const std::string &left, const std::string &right) const
+struct windows_wpath_less {
+	bool operator()(const std::wstring &left, const std::wstring &right) const
 	{
-		const fs::path left_path = fs::u8path(left);
-		const fs::path right_path = fs::u8path(right);
-		const int result = CompareStringOrdinal(left_path.c_str(), -1, right_path.c_str(), -1, TRUE);
+		const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
 		/* Zero means the comparison failed, not equality. Keep ordering strict
 		 * if an invalid key ever reaches this otherwise validated map. */
 		return result == CSTR_LESS_THAN || (result == 0 && left < right);
+	}
+};
+
+struct windows_path_less {
+	bool operator()(const std::string &left, const std::string &right) const
+	{
+		return windows_wpath_less{}(fs::u8path(left).native(), fs::u8path(right).native());
 	}
 };
 

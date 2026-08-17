@@ -7,6 +7,7 @@
 #include <winsock2.h>
 
 #include <fmt/format.h>
+#include <set>
 #include <unordered_set>
 #include <aclapi.h>
 
@@ -778,12 +779,17 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 {
 	int max_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
 
-	std::unordered_set<std::string> seen_paths;
+	std::set<std::wstring, windows_wpath_less> seen_paths;
 
 	// Seed from existing entries so we do not add duplicates on re-entrant calls
 	// (e.g. when process_manifest_results is called repeatedly while waiting for blockers)
 	for (const auto &entry_pair : local_manifest) {
-		seen_paths.insert(entry_pair.first.u8string());
+		const std::wstring path = entry_pair.first.native();
+		auto inserted = seen_paths.insert(path);
+		if (!inserted.second && inserted.first->compare(path) != 0) {
+			wlog_error(L"Case-colliding application paths are unsupported: %s and %s", inserted.first->c_str(), path.c_str());
+			throw std::runtime_error("Case-colliding application paths are unsupported");
+		}
 	}
 
 	/* Generate the manifest for the current application directory */
@@ -801,7 +807,13 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		if (fs::is_directory(entry_status))
 			continue;
 
-		if (!seen_paths.emplace(std::move(entry.u8string())).second)
+		const std::wstring path = entry.native();
+		auto inserted = seen_paths.insert(path);
+		if (!inserted.second && inserted.first->compare(path) != 0) {
+			wlog_error(L"Case-colliding application paths are unsupported: %s and %s", inserted.first->c_str(), path.c_str());
+			throw std::runtime_error("Case-colliding application paths are unsupported");
+		}
+		if (!inserted.second)
 			continue;
 
 		local_manifest.emplace_back(entry, std::string(""));

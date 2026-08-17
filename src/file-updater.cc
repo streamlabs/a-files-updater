@@ -9,14 +9,6 @@
 
 namespace {
 
-struct windows_wpath_less {
-	bool operator()(const std::wstring &left, const std::wstring &right) const
-	{
-		const int result = CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
-		return result == CSTR_LESS_THAN || (result == 0 && left < right);
-	}
-};
-
 using checksum_map_t = std::map<std::wstring, std::string, windows_wpath_less>;
 
 checksum_map_t build_local_checksums(const local_manifest_t &local_manifest)
@@ -370,10 +362,16 @@ bool FileUpdater::is_local_files_updated()
 		to_path /= file_name_part;
 
 		if (iter->second.remove_at_update) {
-			if (fs::exists(to_path, ec)) {
-				wlog_error(L"File %s still not exist after update, something went wrong", to_path.c_str());
+			const fs::file_status status = fs::symlink_status(to_path, ec);
+			if (ec && ec != std::errc::no_such_file_or_directory) {
+				wlog_error(L"Could not verify removed file %s after update: %s", to_path.c_str(), ConvertToUtf16WS(ec.message()).c_str());
 				return false;
 			}
+			if (!ec && fs::exists(status) && !fs::is_directory(status)) {
+				wlog_error(L"File %s still exists after update, something went wrong", to_path.c_str());
+				return false;
+			}
+			continue;
 		}
 
 		std::string checksum = calculate_files_checksum_safe(to_path);
