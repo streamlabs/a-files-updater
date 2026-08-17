@@ -23,6 +23,28 @@ checksum_map_t build_local_checksums(const local_manifest_t &local_manifest)
 	return checksums;
 }
 
+bool remove_revert_destination(const fs::path &path, std::error_code &ec)
+{
+	ec.clear();
+	const fs::file_status status = fs::symlink_status(path, ec);
+	if (ec == std::errc::no_such_file_or_directory) {
+		ec.clear();
+		return true;
+	}
+	if (ec) {
+		return false;
+	}
+
+	/* Recurse only into a real directory; remove reparse points as leaf entries. */
+	if (fs::is_directory(status)) {
+		fs::remove_all(path, ec);
+	} else {
+		fs::remove(path, ec);
+	}
+
+	return !ec;
+}
+
 } // namespace
 
 FileUpdater::FileUpdater(fs::path old_files_dir, fs::path app_dir, fs::path new_files_dir, const manifest_map_t &manifest,
@@ -253,10 +275,11 @@ void FileUpdater::revert()
 	for (const auto &entry : revert_entries) {
 		const fs::path &to_path = entry.to_path;
 
-		fs::remove(to_path, ec);
-		if (ec) {
-			wlog_warn(L"Revert have failed to correctly remove changed file: %s ", to_path.c_str());
+		if (!remove_revert_destination(to_path, ec)) {
+			std::wstring wmsg = ConvertToUtf16WS(ec.message());
+			wlog_warn(L"Revert have failed to correctly remove changed path: %s, error %s", to_path.c_str(), wmsg.c_str());
 			error_count++;
+			continue;
 		}
 
 		fs::rename(entry.from_path, to_path, ec);
