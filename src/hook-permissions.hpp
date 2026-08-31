@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -33,10 +34,10 @@ namespace fs = std::filesystem;
  * still whatever it was, quite possibly a standard user's. Secured means it is
  * ours, whether or not the hooks in it turned out to be a full trusted set.
  *
- * The return value does not say what became of the vulkan layer, and is not
- * meant to. The layer is unregistered whenever the directory is not ours or the
- * hooks in it are not a full trusted set, so Secured and AncestorUntrusted can
- * each come back with it registered or not. The log says which.
+ * The layer is unregistered whenever the directory is not ours or the hooks in
+ * it are not a full trusted set. ContainmentFailed means that removal could not
+ * be verified; otherwise Secured and AncestorUntrusted can each come back with
+ * the layer registered or not, and the log says which.
  *
  * AncestorUntrusted changes nothing and is reported only so we can see how
  * often it happens. The directory is ours, but something above it - %ProgramData%
@@ -89,12 +90,14 @@ enum class HookRepair {
 	Secured,
 	AncestorUntrusted,
 	QuarantineBlocked,
+	QuarantineAccessDenied,
+	ContainmentFailed,
 	Failed,
 };
 
-/* How the securing half came out. Blocked is the one a user can do something
- * about: the directory has to be replaced rather than repaired, and somebody
- * holds a file in it open. */
+/* How the securing half came out. Blocked means replacement was refused with
+ * access denied, a sharing violation, or a lock violation. A process may be
+ * holding it open, but access denied alone does not prove that. */
 enum class HookSecure {
 	Secured,
 	Blocked,
@@ -132,6 +135,10 @@ constexpr size_t kHookPairCount = 2;
 struct HookRepairState {
 	fs::path dir;
 	std::array<bool, kHookPairCount> pair_was_trusted{};
+	/* Preserved for the final report: ERROR_ACCESS_DENIED is not proof of a
+	 * holder, and registry cleanup is a separate security postcondition. */
+	std::uint32_t quarantine_error = 0;
+	bool vulkan_cleanup_failed = false;
 	bool attempted = false;
 	HookSecure outcome = HookSecure::Failed;
 };
@@ -155,11 +162,13 @@ HookRepair repair_hook_directory(const fs::path &app_dir, const fs::path &hook_d
 /* The files the securing half has to be able to rename out from under, for a
  * caller that wants to ask the Restart Manager who is holding one. Only the
  * names we own: enumerating the directory would follow whatever junctions a
- * standard user left in it. */
+ * standard user left in it. An empty result does not rule out a directory
+ * handle, an unknown child, or an ACL refusal. */
 std::vector<fs::path> hook_dir_files(const fs::path &hook_dir);
 
 /* Raises the handled error the outcome deserves, if any. Separate categories:
- * an untrusted ancestor is an environment we cannot repair, a blocked
- * quarantine is one the user was asked about and declined or could not clear,
- * and grouping either with a failed repair would bury the one we can act on. */
+ * an untrusted ancestor is an environment we cannot repair, access denied does
+ * not claim a holder the Restart Manager may not find, sharing violations are
+ * definite blockers, and a failure to withdraw the Vulkan layer is the one
+ * containment failure that must not be buried under the repair failure. */
 void report_hook_repair(HookRepair result);

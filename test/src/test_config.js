@@ -66,7 +66,7 @@ exports.gettestinfo = function (testname) {
     //test results
     expectedResult: "filesupdated", // "filesnotchanged", "", "filescorrupted"
     expectedCrashReport: false,
-    expectedHookReport: undefined, // "", "HookQuarantineBlocked", "HookDirAncestorUntrusted"
+    expectedHookReport: undefined, // "", "HookQuarantineAccessDenied", "HookQuarantineBlocked", "HookDirAncestorUntrusted"
     expectedHookDirSecured: undefined, // true once BUILTIN\Users can no longer write to it
 
     register_unnecesary_request: false,

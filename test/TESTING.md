@@ -77,7 +77,9 @@ Builds from the same `src/hook-permissions.cc` the updater ships and drives it
 against scratch directories, so the shapes a real machine only produces
 occasionally can be built on purpose: a directory owned by a standard user, a
 hook held open by a running process, a junction where the directory should be,
-an untrusted parent, an install directory nobody should publish from.
+an untrusted parent, an install directory nobody should publish from. It also
+covers unidentified directory and foreign-file handles, an ACL-only rename
+refusal, and verified removal of both per-user Vulkan registry views.
 
 ```
 cmake --build build --target hook-dir-tests --config Debug
@@ -115,8 +117,10 @@ ever sees the path - only the leaf itself is left the way each scenario needs it
   nothing.
 * `hookDirBlocked` - the pack's blocker is copied in as `graphics-hook64.dll`
   and launched, so its running image holds the file open exactly as a hooked
-  game does. The update should still finish, and `HookQuarantineBlocked` should
-  arrive at the crash report emulator.
+  game does. The update should still finish. Windows normally reports this
+  directory rename as `ERROR_ACCESS_DENIED`, so
+  the Sentry report should use `HookQuarantineAccessDenied`;
+  explicit sharing or lock violations use `HookQuarantineBlocked`.
 
 Set `hookPrompt` to `'0'` to check that the repair still runs and reports with
 the dialog withdrawn. Interactive runs (`runAsInteractive = 1`) show the dialog
