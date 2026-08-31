@@ -404,22 +404,27 @@ bool delete_layer_value(HKEY root, DWORD wow_flag, const std::wstring &value)
 {
 	const wchar_t *const root_name = root == HKEY_LOCAL_MACHINE ? L"HKLM" : L"HKCU";
 	HKEY key = nullptr;
-	const LSTATUS opened = RegOpenKeyExW(root, kImplicitLayers, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | wow_flag, &key);
+	LSTATUS opened = RegOpenKeyExW(root, kImplicitLayers, 0, KEY_QUERY_VALUE | wow_flag, &key);
 	if (opened == ERROR_FILE_NOT_FOUND)
 		return true;
 	if (opened != ERROR_SUCCESS) {
-		wlog_warn(L"Could not open %s Vulkan implicit layer registry view 0x%08lX to remove %s: %ld", root_name, wow_flag, value.c_str(), opened);
+		wlog_warn(L"Could not open %s Vulkan implicit layer registry view 0x%08lX to query %s: %ld", root_name, wow_flag, value.c_str(), opened);
 		return false;
 	}
 
 	LSTATUS result = RegQueryValueExW(key, value.c_str(), nullptr, nullptr, nullptr, nullptr);
+	RegCloseKey(key);
 	if (result == ERROR_FILE_NOT_FOUND) {
-		RegCloseKey(key);
 		return true;
 	}
 	if (result != ERROR_SUCCESS) {
 		wlog_warn(L"Could not query Vulkan implicit layer %s in %s view 0x%08lX: %ld", value.c_str(), root_name, wow_flag, result);
-		RegCloseKey(key);
+		return false;
+	}
+
+	opened = RegOpenKeyExW(root, kImplicitLayers, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | wow_flag, &key);
+	if (opened != ERROR_SUCCESS) {
+		wlog_warn(L"Could not open %s Vulkan implicit layer registry view 0x%08lX to remove %s: %ld", root_name, wow_flag, value.c_str(), opened);
 		return false;
 	}
 
