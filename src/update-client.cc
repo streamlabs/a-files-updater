@@ -872,24 +872,29 @@ bool update_client::process_hook_blockers()
 
 	std::vector<blocker_info> blocker_details = get_hook_dir_blockers(params->hook_dir);
 
-	/* Nothing to name, nobody to ask, or asking is turned off: the repair
-	 * is retried and reported at the end of the update either way. */
-	if (blocker_details.empty() || !params->interactive || !params->hook_prompt) {
+	/* A non-interactive caller cannot act on the blocker. The repair is
+	 * retried and reported at the end of the update either way. */
+	if (!params->interactive || !params->hook_prompt) {
 		log_blockers("Hook directory is held open by", blocker_details);
 		return true;
 	}
 
-	if (shown_blocker_kind != blocker_kind::hook) {
-		shown_blocker_kind = blocker_kind::hook;
+	const blocker_kind hook_kind = blocker_details.empty() ? blocker_kind::hook_unknown : blocker_kind::hook;
+	const bool kind_changed = shown_blocker_kind != hook_kind;
+
+	if (kind_changed) {
+		if (shown_blocker_kind)
+			this->blocker_events->blocker_wait_complete();
+		shown_blocker_kind = hook_kind;
 		process_list_text = L"";
-		this->blocker_events->blocker_start(blocker_kind::hook);
+		this->blocker_events->blocker_start(hook_kind);
 	}
 
 	std::wstring new_process_list_text = format_blocker_list(blocker_details);
 	bool list_changed = process_list_text.compare(new_process_list_text) != 0;
 
 	/* once per change rather than once per second */
-	if (list_changed)
+	if (kind_changed || list_changed)
 		log_blockers("Hook directory is held open by", blocker_details);
 
 	process_list_text = new_process_list_text;

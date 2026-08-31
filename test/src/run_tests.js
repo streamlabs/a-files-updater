@@ -260,7 +260,7 @@ async function run_tests() {
         testinfo.hookDirBlocked = true;
         testinfo.expectedHookDirSecured = false;
         // no expectedHookReport: the crash reporter posts to sentry.io, not to the
-        // emulator, so nothing arrives here. HookQuarantineBlocked is asserted by
+        // emulator, so nothing arrives here. HookQuarantineAccessDenied is asserted by
         // publish_reports_blocked in test/native/hook-dir-tests.cc.
         test_result = await run_test.test_update(testinfo);
         if (test_result != 0) {

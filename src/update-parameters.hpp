@@ -39,9 +39,10 @@ struct update_parameters {
 	bool cleanup_failure_reported = false;
 	bool enforce_temp_ancestors = true;
 	bool interactive = true;
-	/* Whether a process holding the graphics hook directory open is worth
-	 * stopping the user over. Off still repairs and still reports; it only
-	 * takes away the ask, so the app can withdraw it without a new updater. */
+	/* Whether a blocked graphics hook directory is worth stopping the user
+	 * over, including when Windows cannot identify a holder. Off still repairs
+	 * and still reports; it only takes away the ask, so the app can withdraw it
+	 * without a new updater. */
 	bool hook_prompt = true;
 	bool restart_on_fail = false;
 	bool enable_removing_old_files = false;

@@ -275,6 +275,124 @@ bool file_exists(const fs::path &path)
 	return fs::exists(path, ec);
 }
 
+const wchar_t *const kImplicitLayers = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
+
+bool set_layer_value(const fs::path &manifest, REGSAM view)
+{
+	HKEY key = nullptr;
+	DWORD disposition = 0;
+	if (RegCreateKeyExW(HKEY_CURRENT_USER, kImplicitLayers, 0, nullptr, 0, KEY_SET_VALUE | view, nullptr, &key, &disposition) != ERROR_SUCCESS)
+		return false;
+
+	const DWORD enabled = 0;
+	const LSTATUS result = RegSetValueExW(key, manifest.c_str(), 0, REG_DWORD, reinterpret_cast<const BYTE *>(&enabled), sizeof(enabled));
+	RegCloseKey(key);
+	return result == ERROR_SUCCESS;
+}
+
+bool layer_value_exists(const fs::path &manifest, REGSAM view)
+{
+	HKEY key = nullptr;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, kImplicitLayers, 0, KEY_QUERY_VALUE | view, &key) != ERROR_SUCCESS)
+		return false;
+
+	const LSTATUS result = RegQueryValueExW(key, manifest.c_str(), nullptr, nullptr, nullptr, nullptr);
+	RegCloseKey(key);
+	return result == ERROR_SUCCESS;
+}
+
+class RegistryDaclGuard {
+public:
+	explicit RegistryDaclGuard(REGSAM view)
+	{
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, kImplicitLayers, 0, READ_CONTROL | WRITE_DAC | view, &key_) != ERROR_SUCCESS)
+			return;
+
+		PACL dacl = nullptr;
+		if (GetSecurityInfo(key_, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr, &original_) != ERROR_SUCCESS) {
+			RegCloseKey(key_);
+			key_ = nullptr;
+			return;
+		}
+
+		SECURITY_DESCRIPTOR_CONTROL control = 0;
+		DWORD revision = 0;
+		if (GetSecurityDescriptorControl(original_, &control, &revision))
+			original_was_protected_ = (control & SE_DACL_PROTECTED) != 0;
+	}
+
+	~RegistryDaclGuard()
+	{
+		restore();
+		if (original_)
+			LocalFree(original_);
+		if (key_)
+			RegCloseKey(key_);
+	}
+
+	RegistryDaclGuard(const RegistryDaclGuard &) = delete;
+	RegistryDaclGuard &operator=(const RegistryDaclGuard &) = delete;
+
+	bool valid() const { return key_ && original_; }
+
+	bool restrict_to_query()
+	{
+		if (!valid())
+			return false;
+
+		const std::wstring sddl = L"D:P(A;;KRWD;;;" + current_user_sid() + L")(A;;KA;;;SY)";
+		PSECURITY_DESCRIPTOR descriptor = nullptr;
+		if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr))
+			return false;
+
+		PACL dacl = nullptr;
+		BOOL present = false;
+		BOOL defaulted = false;
+		const bool parsed = GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) && present;
+		const DWORD result = parsed ? SetSecurityInfo(key_, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr,
+							      nullptr, dacl, nullptr)
+					    : ERROR_INVALID_SECURITY_DESCR;
+
+		LocalFree(descriptor);
+		changed_ = result == ERROR_SUCCESS;
+		return changed_;
+	}
+
+	bool restore()
+	{
+		if (!changed_)
+			return valid();
+
+		PACL dacl = nullptr;
+		BOOL present = false;
+		BOOL defaulted = false;
+		if (!GetSecurityDescriptorDacl(original_, &present, &dacl, &defaulted) || !present)
+			return false;
+
+		const SECURITY_INFORMATION inheritance = original_was_protected_ ? PROTECTED_DACL_SECURITY_INFORMATION : UNPROTECTED_DACL_SECURITY_INFORMATION;
+		const DWORD result = SetSecurityInfo(key_, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION | inheritance, nullptr, nullptr, dacl, nullptr);
+		if (result == ERROR_SUCCESS)
+			changed_ = false;
+		return result == ERROR_SUCCESS;
+	}
+
+private:
+	HKEY key_ = nullptr;
+	PSECURITY_DESCRIPTOR original_ = nullptr;
+	bool original_was_protected_ = false;
+	bool changed_ = false;
+};
+
+void clear_layer_value(const fs::path &manifest, REGSAM view)
+{
+	HKEY key = nullptr;
+	if (RegOpenKeyExW(HKEY_CURRENT_USER, kImplicitLayers, 0, KEY_SET_VALUE | view, &key) != ERROR_SUCCESS)
+		return;
+
+	RegDeleteValueW(key, manifest.c_str());
+	RegCloseKey(key);
+}
+
 /* A fake install tree holding a publishable payload, laid out where
  * trusted_hook_payload looks for it. */
 fs::path make_payload(const fs::path &app_dir)
@@ -766,6 +884,165 @@ void open_handle_blocks_quarantine(const fs::path &scratch)
 	CloseHandle(holder);
 }
 
+void open_directory_handle_is_an_unidentified_blocker(const fs::path &scratch)
+{
+	Case c(scratch, "open_directory_handle_is_an_unidentified_blocker");
+
+	make_untrusted(c.hook_dir);
+	HANDLE holder =
+		CreateFileW(c.hook_dir.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	CHECK(holder != INVALID_HANDLE_VALUE);
+
+	HookRepairState state;
+	CHECK(secure_hook_directory(c.hook_dir, state) == HookSecure::Blocked);
+	CHECK(state.quarantine_error == ERROR_ACCESS_DENIED);
+	CHECK(get_hook_dir_blockers(c.hook_dir).empty());
+
+	const HookRepair result = publish_hook_payload(c.app_dir, c.hook_dir, state);
+	report_hook_repair(result);
+	CHECK(result == HookRepair::QuarantineAccessDenied);
+	CHECK(last_reported_category() == "HookQuarantineAccessDenied");
+
+	CloseHandle(holder);
+}
+
+void unknown_file_handle_is_an_unidentified_blocker(const fs::path &scratch)
+{
+	Case c(scratch, "unknown_file_handle_is_an_unidentified_blocker");
+	const fs::path foreign = c.hook_dir / L"foreign-hook.dll";
+
+	make_untrusted(c.hook_dir);
+	write_file(foreign, "foreign");
+	HANDLE holder = hold_open(foreign);
+	CHECK(holder != INVALID_HANDLE_VALUE);
+
+	HookRepairState state;
+	CHECK(secure_hook_directory(c.hook_dir, state) == HookSecure::Blocked);
+	CHECK(state.quarantine_error == ERROR_ACCESS_DENIED);
+	CHECK(get_hook_dir_blockers(c.hook_dir).empty());
+
+	CloseHandle(holder);
+}
+
+void restrictive_acl_is_reported_as_access_denied(const fs::path &scratch)
+{
+	Case c(scratch, "restrictive_acl_is_reported_as_access_denied");
+	const std::wstring sid = current_user_sid();
+
+	make_untrusted(c.hook_dir);
+	/* No delete-child on the trusted parent, and an explicit delete denial
+	 * for Administrators on the user-owned leaf. This is an ACL refusal, not
+	 * a process holder, and Restart Manager must not be expected to name one. */
+	CHECK(apply_sddl(c.root, L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FRFX;;;BA)"));
+	CHECK(apply_sddl(c.hook_dir, L"O:" + sid + L"D:PAI(D;;SD;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;" + sid + L")"));
+
+	HookRepairState state;
+	CHECK(secure_hook_directory(c.hook_dir, state) == HookSecure::Blocked);
+	CHECK(state.quarantine_error == ERROR_ACCESS_DENIED);
+	CHECK(get_hook_dir_blockers(c.hook_dir).empty());
+
+	const HookRepair result = publish_hook_payload(c.app_dir, c.hook_dir, state);
+	report_hook_repair(result);
+	CHECK(result == HookRepair::QuarantineAccessDenied);
+	CHECK(last_reported_category() == "HookQuarantineAccessDenied");
+
+	/* Restore removable ACLs so the suite can clean its scratch tree. */
+	CHECK(apply_sddl(c.root, L"O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"));
+	CHECK(apply_sddl(c.hook_dir, L"O:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"));
+}
+
+void blocked_repair_removes_vulkan_registration(const fs::path &scratch)
+{
+	Case c(scratch, "blocked_repair_removes_vulkan_registration");
+	const fs::path held = c.hook_dir / L"graphics-hook64.dll";
+	const fs::path manifest32 = c.hook_dir / L"obs-vulkan32.json";
+	const fs::path manifest64 = c.hook_dir / L"obs-vulkan64.json";
+
+	make_untrusted(c.hook_dir);
+	write_file(held, "planted");
+	HANDLE holder = hold_open(held);
+	CHECK(holder != INVALID_HANDLE_VALUE);
+
+	for (REGSAM view : {KEY_WOW64_32KEY, KEY_WOW64_64KEY}) {
+		CHECK(set_layer_value(manifest32, view));
+		CHECK(set_layer_value(manifest64, view));
+	}
+
+	HookRepairState state;
+	CHECK(secure_hook_directory(c.hook_dir, state) == HookSecure::Blocked);
+	CHECK(!state.vulkan_cleanup_failed);
+
+	for (REGSAM view : {KEY_WOW64_32KEY, KEY_WOW64_64KEY}) {
+		CHECK(!layer_value_exists(manifest32, view));
+		CHECK(!layer_value_exists(manifest64, view));
+		clear_layer_value(manifest32, view);
+		clear_layer_value(manifest64, view);
+	}
+
+	CloseHandle(holder);
+}
+
+void absent_layer_in_read_only_registry_is_already_contained(const fs::path &scratch)
+{
+	Case c(scratch, "absent_layer_in_read_only_registry_is_already_contained");
+	const fs::path held = c.hook_dir / L"graphics-hook64.dll";
+	const fs::path manifest32 = c.hook_dir / L"obs-vulkan32.json";
+	const fs::path manifest64 = c.hook_dir / L"obs-vulkan64.json";
+	constexpr REGSAM view = KEY_WOW64_32KEY;
+
+	make_untrusted(c.hook_dir);
+	write_file(held, "planted");
+	HANDLE holder = hold_open(held);
+	CHECK(holder != INVALID_HANDLE_VALUE);
+	clear_layer_value(manifest32, view);
+	clear_layer_value(manifest64, view);
+
+	RegistryDaclGuard registry(view);
+	CHECK(registry.valid());
+	CHECK(registry.restrict_to_query());
+
+	HookRepairState state;
+	CHECK(secure_hook_directory(c.hook_dir, state) == HookSecure::Blocked);
+	CHECK(!state.vulkan_cleanup_failed);
+	CHECK(publish_hook_payload(c.app_dir, c.hook_dir, state) == HookRepair::QuarantineAccessDenied);
+
+	CHECK(registry.restore());
+	CloseHandle(holder);
+}
+
+void registry_cleanup_failure_is_reported_as_containment_failure(const fs::path &scratch)
+{
+	Case c(scratch, "registry_cleanup_failure_is_reported_as_containment_failure");
+	const fs::path held = c.hook_dir / L"graphics-hook64.dll";
+	const fs::path manifest = c.hook_dir / L"obs-vulkan32.json";
+	constexpr REGSAM view = KEY_WOW64_32KEY;
+
+	make_untrusted(c.hook_dir);
+	write_file(held, "planted");
+	HANDLE holder = hold_open(held);
+	CHECK(holder != INVALID_HANDLE_VALUE);
+	CHECK(set_layer_value(manifest, view));
+
+	RegistryDaclGuard registry(view);
+	CHECK(registry.valid());
+	CHECK(registry.restrict_to_query());
+	CHECK(layer_value_exists(manifest, view));
+
+	HookRepairState state;
+	CHECK(secure_hook_directory(c.hook_dir, state) == HookSecure::Blocked);
+	CHECK(state.vulkan_cleanup_failed);
+
+	const HookRepair result = publish_hook_payload(c.app_dir, c.hook_dir, state);
+	report_hook_repair(result);
+	CHECK(result == HookRepair::ContainmentFailed);
+	CHECK(last_reported_category() == "HookContainmentFailure");
+	CHECK(layer_value_exists(manifest, view));
+
+	CHECK(registry.restore());
+	clear_layer_value(manifest, view);
+	CloseHandle(holder);
+}
+
 void blocked_holder_is_named(const fs::path &scratch)
 {
 	Case c(scratch, "blocked_holder_is_named");
@@ -800,12 +1077,13 @@ void publish_reports_blocked(const fs::path &scratch)
 
 	HookRepairState state;
 	CHECK(secure_hook_directory(c.hook_dir, state) == HookSecure::Blocked);
+	const bool access_denied = state.quarantine_error == ERROR_ACCESS_DENIED;
 
 	const HookRepair result = publish_hook_payload(c.app_dir, c.hook_dir, state);
 	report_hook_repair(result);
 
-	CHECK(result == HookRepair::QuarantineBlocked);
-	CHECK(last_reported_category() == "HookQuarantineBlocked");
+	CHECK(result == (access_denied ? HookRepair::QuarantineAccessDenied : HookRepair::QuarantineBlocked));
+	CHECK(last_reported_category() == (access_denied ? "HookQuarantineAccessDenied" : "HookQuarantineBlocked"));
 	/* nothing of ours goes into a directory that is still theirs */
 	CHECK(!file_exists(c.hook_dir / L"obs-vulkan64.json"));
 
@@ -1131,6 +1409,12 @@ int wmain(int argc, wchar_t **argv)
 	untrusted_directory_is_replaced(scratch);
 	secured_directory_is_left_alone(scratch);
 	open_handle_blocks_quarantine(scratch);
+	open_directory_handle_is_an_unidentified_blocker(scratch);
+	unknown_file_handle_is_an_unidentified_blocker(scratch);
+	restrictive_acl_is_reported_as_access_denied(scratch);
+	blocked_repair_removes_vulkan_registration(scratch);
+	absent_layer_in_read_only_registry_is_already_contained(scratch);
+	registry_cleanup_failure_is_reported_as_containment_failure(scratch);
 	blocked_holder_is_named(scratch);
 	publish_reports_blocked(scratch);
 	releasing_the_holder_lets_publish_finish(scratch);

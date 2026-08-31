@@ -78,6 +78,18 @@ msgstr ""
 "These apps are using the graphics hook, which stops us from securing it.\n"
 "Close them to let the update repair it, or skip:"
 
+#: src\main.cc
+msgid ""
+"Something is preventing us from securing the graphics hook, but Windows "
+"could not identify it.\n"
+"Close graphics or capture apps and wait for a retry.\n"
+"If it stays blocked, skip, restart Windows, and update again:"
+msgstr ""
+"Something is preventing us from securing the graphics hook, but Windows "
+"could not identify it.\n"
+"Close graphics or capture apps and wait for a retry.\n"
+"If it stays blocked, skip, restart Windows, and update again:"
+
 #: src\main.cc:677
 msgid ""
 "Streamlabs Desktop requires at least 2GB of free disk space to update "

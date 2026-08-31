@@ -83,9 +83,15 @@ struct pid_callbacks {
 
 /* What the blockers are holding, which decides the wording and the buttons.
  * Hook is the only one the user may decline: the update does not need the
- * graphics hook directory, so a process holding it is a reason to ask rather
- * than a reason to stop. */
-enum class blocker_kind { generic, virtualcam, hook };
+ * graphics hook directory, so a blocked replacement is a reason to ask rather
+ * than a reason to stop. hook_unknown gives the same choice when Windows
+ * cannot name a process. */
+enum class blocker_kind { generic, virtualcam, hook, hook_unknown };
+
+inline bool is_hook_blocker(blocker_kind kind)
+{
+	return kind == blocker_kind::hook || kind == blocker_kind::hook_unknown;
+}
 
 struct blocker_callbacks {
 	virtual void blocker_start(blocker_kind kind) = 0;
