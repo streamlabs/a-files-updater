@@ -272,8 +272,11 @@ fs::path quarantine_name(const fs::path &dir)
 
 enum class Quarantine { Moved, Blocked, Failed };
 
-Quarantine quarantine_hook_dir(const fs::path &dir)
+Quarantine quarantine_hook_dir(const fs::path &dir, std::uint32_t *error_out)
 {
+	if (error_out)
+		*error_out = ERROR_SUCCESS;
+
 	/* random, and tried once - see the header */
 	const fs::path aside = quarantine_name(dir);
 	if (aside.empty())
@@ -281,6 +284,8 @@ Quarantine quarantine_hook_dir(const fs::path &dir)
 
 	if (!MoveFileExW(dir.c_str(), aside.c_str(), 0)) {
 		const DWORD error = GetLastError();
+		if (error_out)
+			*error_out = error;
 
 		wlog_warn(L"Could not move %s aside: %lu", dir.c_str(), error);
 
@@ -395,26 +400,60 @@ bool reset_acl_of_file_we_wrote(const fs::path &file)
 	return result == ERROR_SUCCESS;
 }
 
-void delete_layer_value(HKEY root, DWORD wow_flag, const std::wstring &value)
+bool delete_layer_value(HKEY root, DWORD wow_flag, const std::wstring &value)
 {
+	const wchar_t *const root_name = root == HKEY_LOCAL_MACHINE ? L"HKLM" : L"HKCU";
 	HKEY key = nullptr;
-	if (RegOpenKeyExW(root, kImplicitLayers, 0, KEY_WRITE | wow_flag, &key) != ERROR_SUCCESS)
-		return;
+	const LSTATUS opened = RegOpenKeyExW(root, kImplicitLayers, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | wow_flag, &key);
+	if (opened == ERROR_FILE_NOT_FOUND)
+		return true;
+	if (opened != ERROR_SUCCESS) {
+		wlog_warn(L"Could not open %s Vulkan implicit layer registry view 0x%08lX to remove %s: %ld", root_name, wow_flag, value.c_str(), opened);
+		return false;
+	}
 
-	RegDeleteValueW(key, value.c_str());
+	LSTATUS result = RegQueryValueExW(key, value.c_str(), nullptr, nullptr, nullptr, nullptr);
+	if (result == ERROR_FILE_NOT_FOUND) {
+		RegCloseKey(key);
+		return true;
+	}
+	if (result != ERROR_SUCCESS) {
+		wlog_warn(L"Could not query Vulkan implicit layer %s in %s view 0x%08lX: %ld", value.c_str(), root_name, wow_flag, result);
+		RegCloseKey(key);
+		return false;
+	}
+
+	result = RegDeleteValueW(key, value.c_str());
+	if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
+		wlog_warn(L"Could not remove Vulkan implicit layer %s from %s view 0x%08lX: %ld", value.c_str(), root_name, wow_flag, result);
+		RegCloseKey(key);
+		return false;
+	}
+
+	result = RegQueryValueExW(key, value.c_str(), nullptr, nullptr, nullptr, nullptr);
 	RegCloseKey(key);
+
+	if (result == ERROR_FILE_NOT_FOUND)
+		return true;
+
+	wlog_warn(L"Vulkan implicit layer %s remains in %s view 0x%08lX after deletion: %ld", value.c_str(), root_name, wow_flag, result);
+	return false;
 }
 
-void remove_vulkan_layer_registry(const fs::path &dir)
+bool remove_vulkan_layer_registry(const fs::path &dir)
 {
+	bool removed = true;
+
 	for (const HookPair &pair : kHookPairs) {
 		const std::wstring value = (dir / pair.manifest).wstring();
 
 		for (HKEY root : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER}) {
-			delete_layer_value(root, KEY_WOW64_64KEY, value);
-			delete_layer_value(root, KEY_WOW64_32KEY, value);
+			removed = delete_layer_value(root, KEY_WOW64_64KEY, value) && removed;
+			removed = delete_layer_value(root, KEY_WOW64_32KEY, value) && removed;
 		}
 	}
+
+	return removed;
 }
 
 bool delete_then_copy(const fs::path &src, const fs::path &dst)
@@ -626,7 +665,7 @@ HookSecure secure_hook_directory(const fs::path &hook_dir, HookRepairState &stat
 
 		if (!RemoveDirectoryW(dir.c_str())) {
 			wlog_warn(L"Hook directory %s is a reparse point and could not be unlinked: %lu", dir.c_str(), GetLastError());
-			remove_vulkan_layer_registry(dir);
+			state.vulkan_cleanup_failed = !remove_vulkan_layer_registry(dir);
 			return state.outcome;
 		}
 	}
@@ -634,10 +673,10 @@ HookSecure secure_hook_directory(const fs::path &hook_dir, HookRepairState &stat
 	if (!dir_was_trusted && fs::exists(dir, ec)) {
 		wlog_warn(L"Hook directory %s %s; replacing it", dir.c_str(), before.object_why.c_str());
 
-		const Quarantine moved = quarantine_hook_dir(dir);
+		const Quarantine moved = quarantine_hook_dir(dir, &state.quarantine_error);
 
 		if (moved != Quarantine::Moved) {
-			remove_vulkan_layer_registry(dir);
+			state.vulkan_cleanup_failed = !remove_vulkan_layer_registry(dir);
 			if (moved == Quarantine::Blocked)
 				state.outcome = HookSecure::Blocked;
 			return state.outcome;
@@ -645,7 +684,7 @@ HookSecure secure_hook_directory(const fs::path &hook_dir, HookRepairState &stat
 	}
 
 	if ((!dir_was_trusted && !create_hook_dir(dir)) || !apply_hook_dir_security(dir)) {
-		remove_vulkan_layer_registry(dir);
+		state.vulkan_cleanup_failed = !remove_vulkan_layer_registry(dir);
 		return state.outcome;
 	}
 
@@ -695,9 +734,11 @@ HookRepair publish_hook_payload(const fs::path &app_dir, const fs::path &hook_di
 		break;
 	case HookSecure::Blocked:
 		/* still not ours, so nothing goes in it */
-		return HookRepair::QuarantineBlocked;
+		if (state.vulkan_cleanup_failed)
+			return HookRepair::ContainmentFailed;
+		return state.quarantine_error == ERROR_ACCESS_DENIED ? HookRepair::QuarantineAccessDenied : HookRepair::QuarantineBlocked;
 	case HookSecure::Failed:
-		return HookRepair::Failed;
+		return state.vulkan_cleanup_failed ? HookRepair::ContainmentFailed : HookRepair::Failed;
 	}
 
 	const fs::path dir = state.dir;
@@ -722,18 +763,24 @@ HookRepair publish_hook_payload(const fs::path &app_dir, const fs::path &hook_di
 	/* The layer is kept by a directory that is ours holding a full set of
 	 * trusted hooks. The path above it is reported and nothing else - see
 	 * the header. */
-	if (!after.object || !hooks_trusted)
-		remove_vulkan_layer_registry(dir);
+	if ((!after.object || !hooks_trusted) && !remove_vulkan_layer_registry(dir))
+		state.vulkan_cleanup_failed = true;
 
 	if (!after.object) {
-		wlog_warn(L"The repair did not take - hook directory %s %s; the vulkan layer was unregistered", dir.c_str(), after.object_why.c_str());
-		return HookRepair::Failed;
+		wlog_warn(L"The repair did not take - hook directory %s %s; the Vulkan layer%s unregistered", dir.c_str(), after.object_why.c_str(),
+			  state.vulkan_cleanup_failed ? L" could not be verified as" : L" was");
+		return state.vulkan_cleanup_failed ? HookRepair::ContainmentFailed : HookRepair::Failed;
 	}
 
-	if (!hooks_trusted)
-		log_info("Hook directory secured; the vulkan layer was unregistered until the hook is reinstalled");
+	if (!hooks_trusted && state.vulkan_cleanup_failed)
+		log_warn("Hook directory secured, but the Vulkan layer could not be verified as unregistered");
+	else if (!hooks_trusted)
+		log_info("Hook directory secured; the Vulkan layer was unregistered until the hook is reinstalled");
 	else
 		log_info("Hook directory permissions verified");
+
+	if (state.vulkan_cleanup_failed)
+		return HookRepair::ContainmentFailed;
 
 	if (!after.ancestors) {
 		wlog_warn(L"Hook directory %s is administrator-only, but it is reached through %s, which %s; left in use", dir.c_str(), after.ancestor.c_str(),
@@ -767,6 +814,12 @@ void report_hook_repair(HookRepair result)
 		/* the log names whoever was holding it, when the Restart
 		 * Manager could tell us */
 		report_handled_error("HookQuarantineBlocked", "A process is holding the graphics hook directory open");
+		break;
+	case HookRepair::QuarantineAccessDenied:
+		report_handled_error("HookQuarantineAccessDenied", "Access was denied while replacing the graphics hook directory");
+		break;
+	case HookRepair::ContainmentFailed:
+		report_handled_error("HookContainmentFailure", "An untrusted graphics hook Vulkan layer could not be verified as disabled");
 		break;
 	case HookRepair::Failed:
 		report_handled_error("HookRepairFailure", "Could not secure the graphics hook directory");

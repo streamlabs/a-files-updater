@@ -898,6 +898,12 @@ void callbacks_impl::blocker_start(blocker_kind kind)
 		blocking_app_label = ConvertToUtf16WS(boost::locale::translate("These apps are using the graphics hook, which stops us from securing it.\n"
 									       "Close them to let the update repair it, or skip:"));
 		break;
+	case blocker_kind::hook_unknown:
+		blocking_app_label = ConvertToUtf16WS(boost::locale::translate(
+			"Something is preventing us from securing the graphics hook, but Windows could not identify it.\n"
+			"Close graphics or capture apps and wait for a retry.\n"
+			"If it stays blocked, skip, restart Windows, and update again:"));
+		break;
 	case blocker_kind::generic:
 		blocking_app_label = ConvertToUtf16WS(boost::locale::translate("Please close these apps until the update is finished:"));
 		break;
@@ -921,7 +927,7 @@ void callbacks_impl::blocker_start(blocker_kind kind)
 	/* Nothing to stop in the hook phase: the update goes ahead either way,
 	 * and closing a game out from under someone to re-permission a
 	 * directory is not a trade we offer. */
-	ShowWindow(kill_button, kind == blocker_kind::hook ? SW_HIDE : SW_SHOW);
+	ShowWindow(kill_button, is_hook_blocker(kind) ? SW_HIDE : SW_SHOW);
 	ShowWindow(cancel_button, SW_SHOW);
 
 	/* Whatever dialog came before disabled these on the way out, and hiding
@@ -930,7 +936,7 @@ void callbacks_impl::blocker_start(blocker_kind kind)
 	EnableWindow(kill_button, TRUE);
 	EnableWindow(cancel_button, TRUE);
 
-	if (kind == blocker_kind::hook) {
+	if (is_hook_blocker(kind)) {
 		std::wstring skip_label = ConvertToUtf16WS(boost::locale::translate("Skip"));
 		{
 			std::lock_guard<std::mutex> lock(cancel_label_mutex);
@@ -955,7 +961,7 @@ int callbacks_impl::blocker_waiting_for(const std::vector<blocker_info> &blocker
 		/* Skipping the hook repair cancels nothing, so the error
 		 * suppression the cancel button arms has nothing to suppress
 		 * and would sit there waiting for an unrelated failure. */
-		if (current_blocker_kind == blocker_kind::hook)
+		if (is_hook_blocker(current_blocker_kind))
 			cancel_silent = false;
 		ret = 2;
 	} else if (should_kill_blockers) {
@@ -1035,14 +1041,15 @@ void callbacks_impl::run_hook_repair_ui()
 		std::vector<blocker_info> blockers = get_hook_dir_blockers(params.hook_dir);
 		log_blockers("Hook directory is held open by", blockers);
 
-		if (!blockers.empty() && params.interactive && params.hook_prompt) {
+		if (params.interactive && params.hook_prompt) {
 			std::wstring shown;
+			blocker_kind shown_kind = blockers.empty() ? blocker_kind::hook_unknown : blocker_kind::hook;
 
 			ShowWindow(frame, SW_SHOWNORMAL);
-			blocker_start(blocker_kind::hook);
+			blocker_start(shown_kind);
 			should_cancel = false;
 
-			while (!blockers.empty()) {
+			while (true) {
 				std::wstring listed;
 				for (const blocker_info &info : blockers)
 					listed += info.app_name + L" (" + std::to_wstring(info.pid) + L")\r\n";
@@ -1061,6 +1068,13 @@ void callbacks_impl::run_hook_repair_ui()
 					break;
 
 				blockers = get_hook_dir_blockers(params.hook_dir);
+				const blocker_kind next_kind = blockers.empty() ? blocker_kind::hook_unknown : blocker_kind::hook;
+				if (next_kind != shown_kind) {
+					blocker_wait_complete();
+					blocker_start(next_kind);
+					shown_kind = next_kind;
+					shown.clear();
+				}
 			}
 
 			blocker_wait_complete();

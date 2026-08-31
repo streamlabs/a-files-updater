@@ -45,10 +45,9 @@ bool get_blockers_names(blockers_map_t &blockers);
 
 std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers);
 
-/* Who is holding a hook open in the shared graphics hook directory. Best
- * effort, and separate from check_file_updatable: what fails there is a
- * directory rename rather than an open, and its ERROR_ACCESS_DENIED means a
- * holder rather than the unrecoverable failure that switch reads it as. */
+/* Who is holding one of our named hook files open in the shared graphics hook
+ * directory. Best effort: a directory handle, an unknown child, or an ACL
+ * refusal can block the rename without producing an entry here. */
 std::vector<blocker_info> get_hook_dir_blockers(const fs::path &hook_dir);
 
 // write the blocker list to the log, which is attached to the crash report
