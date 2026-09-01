@@ -167,6 +167,83 @@ add_custom_command(
 	-outputresource:"$<TARGET_FILE:slobs-updater>"
 )
 
+# Hook directory tests: the same hook-permissions.cc the updater ships, driven
+# against scratch directories. Console, elevated, no dependencies of its own -
+# see test/native/hook-dir-tests.cc.
+add_executable(hook-dir-tests
+	test/native/hook-dir-tests.cc
+	test/native/stub-reporter.cc
+	src/hook-permissions.cc
+	src/security-random.cc
+	src/updater-storage.cc
+	src/update-blockers.cc
+	src/logger/log.c
+)
+
+target_compile_options(hook-dir-tests PRIVATE $<IF:$<CONFIG:Debug>,-MTd,-MT> -W3 -Zi)
+
+set_property(TARGET hook-dir-tests PROPERTY CXX_STANDARD 17)
+set_property(TARGET hook-dir-tests PROPERTY CXX_STANDARD_REQUIRED ON)
+
+target_include_directories(hook-dir-tests PRIVATE src)
+
+target_link_libraries(hook-dir-tests Advapi32 Shell32 User32 Version Rstrtmgr)
+
+target_compile_definitions(hook-dir-tests
+	PRIVATE
+	-D_WIN32_WINNT=0x0A00
+	-DWINVER=0x0A00
+	-DNOMINMAX
+	-DWIN32_LEAN_AND_MEAN
+	-DUNICODE
+	-D_UNICODE
+	-D_CRT_SECURE_NO_WARNINGS
+)
+
+add_executable(manifest-tests
+	test/native/manifest-tests.cc
+	src/manifest-parser.cc
+)
+
+target_compile_options(manifest-tests PRIVATE $<IF:$<CONFIG:Debug>,-MTd,-MT> -W3 -Zi)
+
+set_property(TARGET manifest-tests PROPERTY CXX_STANDARD 17)
+set_property(TARGET manifest-tests PROPERTY CXX_STANDARD_REQUIRED ON)
+
+target_include_directories(manifest-tests PRIVATE src)
+
+target_compile_definitions(manifest-tests
+	PRIVATE
+	-D_WIN32_WINNT=0x0A00
+	-DWINVER=0x0A00
+	-DNOMINMAX
+	-DWIN32_LEAN_AND_MEAN
+	-DUNICODE
+	-D_UNICODE
+)
+
+add_executable(file-updater-path-tests
+	test/native/file-updater-path-tests.cc
+	src/file-updater-paths.cc
+)
+
+target_compile_options(file-updater-path-tests PRIVATE $<IF:$<CONFIG:Debug>,-MTd,-MT> -W3 -Zi)
+
+set_property(TARGET file-updater-path-tests PROPERTY CXX_STANDARD 17)
+set_property(TARGET file-updater-path-tests PROPERTY CXX_STANDARD_REQUIRED ON)
+
+target_include_directories(file-updater-path-tests PRIVATE src)
+
+target_compile_definitions(file-updater-path-tests
+	PRIVATE
+	-D_WIN32_WINNT=0x0A00
+	-DWINVER=0x0A00
+	-DNOMINMAX
+	-DWIN32_LEAN_AND_MEAN
+	-DUNICODE
+	-D_UNICODE
+)
+
 # Install
 install(FILES $<TARGET_PDB_FILE:slobs-updater> DESTINATION ${CMAKE_INSTALL_PREFIX} OPTIONAL)
 

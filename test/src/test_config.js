@@ -54,13 +54,20 @@ exports.gettestinfo = function (testname) {
     reporterHost: "localhost",
     reporterPort: 80,
 
-    //how to run updater 
+    //how to run updater
     skipUpdaterLaunch: false,
     runAsInteractive: '0',
 
-    //test results 
+    //graphics hook directory, repaired against a scratch copy - needs elevation
+    hookDirTest: false,
+    hookDirBlocked: false, // hold graphics-hook64.dll open, so the repair cannot replace the directory
+    hookPrompt: undefined, // '0' to withdraw the ask without withdrawing the repair
+
+    //test results
     expectedResult: "filesupdated", // "filesnotchanged", "", "filescorrupted"
     expectedCrashReport: false,
+    expectedHookReport: undefined, // "", "HookQuarantineAccessDenied", "HookQuarantineBlocked", "HookDirAncestorUntrusted"
+    expectedHookDirSecured: undefined, // true once BUILTIN\Users can no longer write to it
 
     register_unnecesary_request: false,
 
@@ -92,13 +99,18 @@ exports.gettestinfo = function (testname) {
     { name: "budget_plan(Q3&Q4).xlsx", hugefile: false, testing: "created" },
     { name: "team_meeting_01_10_2023.mp4", hugefile: true, testing: "created" },
     { name: "product_launch@2024.png", hugefile: false, testing: "created" },
+    { name: "literal%26name.txt", hugefile: false, testing: "created" },
+    { name: "equals=name.txt", hugefile: false, testing: "created" },
     { name: "dir/ccache-clang++.sh", hugefile: false, testing: "created" },
     { name: "user-guide_v2.0#updated.pdf", hugefile: false, testing: "created" },
     { name: "file3.jpeg", hugefile: false, testing: "same" },
     { name: "Uninstall Streamlabs OBS.exe", hugefile: false, testing: "deleted exception" },
     { name: "Uninstall Streamlabs Desktop.exe", hugefile: false, testing: "deleted exception" },
     { name: "installername", hugefile: false, testing: "deleted exception" },
+    { name: "resources/app.asar.unpacked/node_modules", hugefile: false, testing: "deleted" },
+    { name: "resources/app.asar.unpacked/node_modules/replacement/plugin.dll", hugefile: false, testing: "created" },
     { name: "dir/resources/app.asar.unpacked/node_modules/plugin.dll", hugefile: false, testing: "skip exception" },
+    { name: "CaseAlias.txt", initialName: "casealias.TXT", hugefile: false, testing: "changed content" },
     { name: "руский файл.jpeg", hugefile: false, testing: "same" },
     { name: "文件名.jpeg", hugefile: false, testing: "same" },
     { name: "рузский файл.jpeg", hugefile: false, testing: "changed content" },

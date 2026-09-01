@@ -8,6 +8,7 @@
 
 #include "logger/log.h"
 #include "checksum-filters.hpp"
+#include "manifest-parser.hpp"
 #include <openssl/evp.h>
 #include <boost/locale.hpp>
 #include <filesystem>
@@ -209,13 +210,18 @@ fs::path prepare_file_path(const fs::path &base, const std::string &target)
 {
 	fs::path file_path = "";
 	try {
-		file_path = base;
-
 		std::string un_urled_path = unfixup_uri(target);
-		file_path /= fs::u8path(un_urled_path.c_str());
+		fs::path requested_path = fs::u8path(un_urled_path.c_str());
+		requested_path.replace_extension();
 
-		file_path.make_preferred();
-		file_path.replace_extension();
+		std::string normalized;
+		std::string validation_error;
+		if (!normalize_manifest_path(requested_path.u8string(), normalized, validation_error)) {
+			log_error("Refusing unsafe file path %s: %s", target.c_str(), validation_error.c_str());
+			return {};
+		}
+
+		file_path = base / fs::u8path(normalized);
 
 		fs::create_directories(file_path.parent_path());
 
@@ -232,34 +238,40 @@ fs::path prepare_file_path(const fs::path &base, const std::string &target)
 	return file_path;
 }
 
+std::string to_hex(const unsigned char *data, size_t len, bool uppercase)
+{
+	static const char lower[] = "0123456789abcdef";
+	static const char upper[] = "0123456789ABCDEF";
+	const char *hex = uppercase ? upper : lower;
+
+	std::string out;
+	out.reserve(len * 2);
+	for (size_t i = 0; i < len; ++i) {
+		out.push_back(hex[data[i] >> 4]);
+		out.push_back(hex[data[i] & 0x0F]);
+	}
+	return out;
+}
+
 std::string encimpl(std::string::value_type v)
 {
-	if (isascii(v))
-		return std::string() + v;
+	const unsigned char uc = static_cast<unsigned char>(v);
 
-	static const char hex_chars[] = "0123456789ABCDEF";
-	unsigned char uc = static_cast<unsigned char>(v);
-	std::string enc = "%";
-	enc.push_back(hex_chars[uc >> 4]);
-	enc.push_back(hex_chars[uc & 0x0F]);
-	return enc;
+	if (isascii(uc))
+		return std::string(1, v);
+
+	return "%" + to_hex(&uc, 1, true);
 }
 
 std::string urlencode(const std::string &url)
 {
-	const std::string::const_iterator start = url.begin();
+	std::string result;
+	result.reserve(url.size());
 
-	std::vector<std::string> qstrs;
+	for (char c : url)
+		result += encimpl(c);
 
-	std::transform(start, url.end(), std::back_inserter(qstrs), encimpl);
-
-	std::ostringstream ostream;
-
-	for (auto const &i : qstrs) {
-		ostream << i;
-	}
-
-	return ostream.str();
+	return result;
 }
 
 void replace_all(std::string &s, std::string_view from, std::string_view to)
@@ -274,10 +286,10 @@ std::string fixup_uri(const std::string &source)
 {
 	std::string result(source);
 
-	const std::map<char, std::string> urlEncodeMap = {{' ', "%20"}, {'"', "%22"}, {'#', "%23"}, {'&', "%26"}, {'\'', "%27"}, {'(', "%28"},
-							  {')', "%29"}, {'*', "%2A"}, {'+', "%2B"}, {',', "%2C"}, {':', "%3A"},  {';', "%3B"},
-							  {'<', "%3C"}, {'=', "%3E"}, {'?', "%3F"}, {'@', "%40"}, {'[', "%5B"},  {']', "%5D"},
-							  {'^', "%5E"}, {'`', "%60"}, {'{', "%7B"}, {'|', "%7C"}, {'}', "%7D"},  {'~', "%7E"}};
+	const std::map<char, std::string> urlEncodeMap = {{' ', "%20"}, {'"', "%22"}, {'#', "%23"}, {'&', "%26"}, {'\'', "%27"}, {'(', "%28"}, {')', "%29"},
+							  {'*', "%2A"}, {'+', "%2B"}, {',', "%2C"}, {':', "%3A"}, {';', "%3B"},  {'<', "%3C"}, {'=', "%3D"},
+							  {'>', "%3E"}, {'?', "%3F"}, {'@', "%40"}, {'[', "%5B"}, {']', "%5D"},  {'^', "%5E"}, {'`', "%60"},
+							  {'{', "%7B"}, {'|', "%7C"}, {'}', "%7D"}, {'~', "%7E"}};
 	replace_all(result, "\\", "/");
 	replace_all(result, "%", "%25");
 	for (const auto &pair : urlEncodeMap) {
@@ -289,21 +301,34 @@ std::string fixup_uri(const std::string &source)
 
 std::string unfixup_uri(const std::string &source)
 {
-	std::string result(source);
+	const auto hex_value = [](unsigned char c) -> int {
+		if (c >= '0' && c <= '9')
+			return c - '0';
+		if (c >= 'A' && c <= 'F')
+			return c - 'A' + 10;
+		if (c >= 'a' && c <= 'f')
+			return c - 'a' + 10;
+		return -1;
+	};
 
-	// Map of URL-encoded strings to their character equivalents
-	const std::map<std::string, char> urlDecodeMap = {{"%20", ' '}, {"%22", '"'}, {"%23", '#'}, {"%26", '&'}, {"%27", '\''}, {"%28", '('}, {"%29", ')'},
-							  {"%2A", '*'}, {"%2B", '+'}, {"%2C", ','}, {"%3A", ':'}, {"%3B", ';'},  {"%3C", '<'}, {"%3E", '='},
-							  {"%3F", '?'}, {"%40", '@'}, {"%5B", '['}, {"%5D", ']'}, {"%5E", '^'},  {"%60", '`'}, {"%7B", '{'},
-							  {"%7C", '|'}, {"%7D", '}'}, {"%7E", '~'}, {"%25", '%'}};
-
-	// Iterating over each encoded sequence in the map
-	for (const auto &pair : urlDecodeMap) {
-		replace_all(result, pair.first, std::string(1, pair.second));
+	std::string result;
+	result.reserve(source.size());
+	for (size_t i = 0; i < source.size();) {
+		char decoded = source[i];
+		if (decoded == '%' && i + 2 < source.size()) {
+			const int high = hex_value(static_cast<unsigned char>(source[i + 1]));
+			const int low = hex_value(static_cast<unsigned char>(source[i + 2]));
+			if (high >= 0 && low >= 0) {
+				decoded = static_cast<char>((high << 4) | low);
+				i += 3;
+			} else {
+				i++;
+			}
+		} else {
+			i++;
+		}
+		result.push_back(decoded == '/' ? '\\' : decoded);
 	}
-
-	// Replacing encoded backslash
-	replace_all(result, "/", "\\");
 
 	return result;
 }
@@ -360,12 +385,7 @@ std::string calculate_files_checksum(const fs::path &path)
 
 		file.close();
 
-		static const char hex_chars[] = "0123456789abcdef";
-		hex_digest.reserve(SHA256_DIGEST_LENGTH * 2);
-		for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-			hex_digest.push_back(hex_chars[hash[i] >> 4]);
-			hex_digest.push_back(hex_chars[hash[i] & 0x0F]);
-		}
+		hex_digest = to_hex(hash, SHA256_DIGEST_LENGTH);
 	}
 
 	return hex_digest;
@@ -433,5 +453,12 @@ void setup_locale()
 	info.variant = properties.variant();
 
 	std::locale real_locale(base_locale, blg::create_messages_facet<char>(info));
+
+	/* Confine boost::locale to message translation only. Keep classic (C) numeric
+	 * facets so std stream/number formatting stays locale-independent and thread-safe:
+	 * boost's numeric facets triggered an MSVC CRT locale race when download/checksum
+	 * workers formatted numbers concurrently. */
+	real_locale = std::locale(real_locale, std::locale::classic(), std::locale::numeric);
+
 	std::locale::global(real_locale);
 }

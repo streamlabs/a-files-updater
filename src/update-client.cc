@@ -2,21 +2,17 @@
 #include <algorithm>
 #include <mutex>
 #include <thread>
-#include <regex>
 #include <chrono>
 
 #include <winsock2.h>
 
 #include <fmt/format.h>
+#include <set>
 #include <unordered_set>
 #include <aclapi.h>
 
 #include <fstream>
 #include <iostream>
-
-using std::regex;
-using std::cmatch;
-using std::regex_search;
 
 const size_t file_buffer_size = 4096;
 
@@ -31,6 +27,8 @@ const size_t file_buffer_size = 4096;
 
 #include "utils.hpp"
 #include "file-updater.h"
+#include "hook-permissions.hpp"
+#include "manifest-parser.hpp"
 
 /*##############################################
  *#
@@ -52,6 +50,15 @@ void update_client::start_file_update()
 			updater.update();
 
 			log_info("Finished updating files without errors.");
+
+			/* Before success(), which tears the window down: this is
+			 * the last point at which there is a UI to show it in.
+			 * The directory was secured before the download; what
+			 * is left is publishing the files we just installed. */
+			if (updater_events)
+				updater_events->hook_repair_start();
+			report_hook_repair(publish_hook_payload(params->app_dir, params->hook_dir, hook_state));
+
 			client_events->success();
 			updated = true;
 		}
@@ -179,6 +186,7 @@ void update_client::handle_file_download_error(std::shared_ptr<file_request<http
 	} else {
 		auto new_request_ctx = std::make_shared<file_request<http::dynamic_body>>(this, request_ctx->target, request_ctx->worker_id);
 		new_request_ctx->retries = request_ctx->retries + 1;
+		new_request_ctx->expected_hash = request_ctx->expected_hash;
 
 		Sleep(new_request_ctx->retries * 100);
 
@@ -231,6 +239,18 @@ void update_client::handle_manifest_download_canceled(std::shared_ptr<manifest_r
 	handle_network_error(download_abort_error, download_abort_message);
 }
 
+void update_client::handle_manifest_content_error(const std::string &str)
+{
+	std::lock_guard<std::mutex> lock(handle_error_mutex);
+	update_download_aborted = true;
+
+	const std::string error = boost::locale::translate(
+		"Streamlabs Desktop received invalid update information and will launch the current version instead.\n\nThe update will try again later. If this issue persists then please download a new installer from www.streamlabs.com");
+	client_events->error(error, "UpdateFailure", "Invalid update manifest");
+	log_error("%s", str.c_str());
+	reset_work_threads_guards();
+}
+
 void update_client::handle_resolve(const boost::system::error_code &error, resolver_type::results_type results)
 {
 	domain_resolve_timeout.cancel();
@@ -260,7 +280,6 @@ void update_client::handle_resolve(const boost::system::error_code &error, resol
 update_client::update_client(struct update_parameters *params)
 	: params(params),
 	  wait_for_blockers(io_ctx),
-	  show_user_blockers_list(true),
 	  active_workers(0),
 	  resolver(io_ctx),
 	  package_download_timer(io_ctx),
@@ -715,7 +734,8 @@ void update_client::checkup_files(struct blockers_map_t &blockers, struct blocke
 					std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(), ::tolower);
 					bool mark_remove = false;
 
-					if (lower_key.find("resources/app.asar.unpacked/node_modules") == 0) {
+					if (lower_key == "resources\\app.asar.unpacked\\node_modules" ||
+					    lower_key.find("resources\\app.asar.unpacked\\node_modules\\") == 0) {
 						mark_remove = true;
 					} else {
 						fs::path kpath(key);
@@ -759,12 +779,17 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 {
 	int max_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
 
-	std::unordered_set<std::string> seen_paths;
+	std::set<std::wstring, windows_wpath_less> seen_paths;
 
 	// Seed from existing entries so we do not add duplicates on re-entrant calls
 	// (e.g. when process_manifest_results is called repeatedly while waiting for blockers)
 	for (const auto &entry_pair : local_manifest) {
-		seen_paths.insert(entry_pair.first.u8string());
+		const std::wstring path = entry_pair.first.native();
+		auto inserted = seen_paths.insert(path);
+		if (!inserted.second && inserted.first->compare(path) != 0) {
+			wlog_error(L"Case-colliding application paths are unsupported: %s and %s", inserted.first->c_str(), path.c_str());
+			throw std::runtime_error("Case-colliding application paths are unsupported");
+		}
 	}
 
 	/* Generate the manifest for the current application directory */
@@ -782,7 +807,13 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 		if (fs::is_directory(entry_status))
 			continue;
 
-		if (!seen_paths.emplace(std::move(entry.u8string())).second)
+		const std::wstring path = entry.native();
+		auto inserted = seen_paths.insert(path);
+		if (!inserted.second && inserted.first->compare(path) != 0) {
+			wlog_error(L"Case-colliding application paths are unsupported: %s and %s", inserted.first->c_str(), path.c_str());
+			throw std::runtime_error("Case-colliding application paths are unsupported");
+		}
+		if (!inserted.second)
 			continue;
 
 		local_manifest.emplace_back(entry, std::string(""));
@@ -813,6 +844,71 @@ void update_client::checkup_manifest(blockers_map_t &blockers, blockers_map_t &v
 }
 
 std::mutex manifest_result_mutex;
+
+static std::wstring format_blocker_list(const std::vector<blocker_info> &blockers)
+{
+	std::wstring text;
+
+	for (const blocker_info &info : blockers) {
+		text += info.app_name;
+		text += L" (";
+		text += std::to_wstring(info.pid);
+		text += L")\r\n";
+	}
+
+	return text;
+}
+
+/* Secures the shared hook directory, and asks the user to close whatever is
+ * holding it open when it has to be replaced and cannot be. Declining is
+ * allowed - the update needs nothing from that directory, and the publishing
+ * half tries once more at the end, by which time the holder may have exited.
+ *
+ * Returns false while the dialog is up, having re-armed the timer. */
+bool update_client::process_hook_blockers()
+{
+	if (secure_hook_directory(params->hook_dir, hook_state) != HookSecure::Blocked)
+		return true;
+
+	std::vector<blocker_info> blocker_details = get_hook_dir_blockers(params->hook_dir);
+
+	/* A non-interactive caller cannot act on the blocker. The repair is
+	 * retried and reported at the end of the update either way. */
+	if (!params->interactive || !params->hook_prompt) {
+		log_blockers("Hook directory is held open by", blocker_details);
+		return true;
+	}
+
+	const blocker_kind hook_kind = blocker_details.empty() ? blocker_kind::hook_unknown : blocker_kind::hook;
+	const bool kind_changed = shown_blocker_kind != hook_kind;
+
+	if (kind_changed) {
+		if (shown_blocker_kind)
+			this->blocker_events->blocker_wait_complete();
+		shown_blocker_kind = hook_kind;
+		process_list_text = L"";
+		this->blocker_events->blocker_start(hook_kind);
+	}
+
+	std::wstring new_process_list_text = format_blocker_list(blocker_details);
+	bool list_changed = process_list_text.compare(new_process_list_text) != 0;
+
+	/* once per change rather than once per second */
+	if (kind_changed || list_changed)
+		log_blockers("Hook directory is held open by", blocker_details);
+
+	process_list_text = new_process_list_text;
+
+	/* No stop-all button in this phase, so 1 cannot arrive */
+	if (this->blocker_events->blocker_waiting_for(blocker_details, list_changed) == 2) {
+		log_info("User skipped the hook directory repair");
+		return true;
+	}
+
+	wait_for_blockers.expires_after(std::chrono::seconds(1));
+	wait_for_blockers.async_wait([this](const boost::system::error_code &) { process_manifest_results(); });
+	return false;
+}
 
 void update_client::process_manifest_results()
 {
@@ -849,17 +945,11 @@ void update_client::process_manifest_results()
 		if (current_blocker_phase == blocker_phase::virtualcam && vcam_only_blockers.list.size() > 0) {
 			auto blocker_details = get_blocker_details(vcam_only_blockers);
 
-			std::wstring new_process_list_text;
-			for (auto &info : blocker_details) {
-				new_process_list_text += info.app_name;
-				new_process_list_text += L" (";
-				new_process_list_text += std::to_wstring(info.pid);
-				new_process_list_text += L")\r\n";
-			}
+			std::wstring new_process_list_text = format_blocker_list(blocker_details);
 
-			if (show_user_blockers_list) {
-				show_user_blockers_list = false;
-				this->blocker_events->blocker_start(true);
+			if (shown_blocker_kind != blocker_kind::virtualcam) {
+				shown_blocker_kind = blocker_kind::virtualcam;
+				this->blocker_events->blocker_start(blocker_kind::virtualcam);
 			}
 
 			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
@@ -901,9 +991,9 @@ void update_client::process_manifest_results()
 
 		// Transition from virtualcam phase to generic phase
 		if (current_blocker_phase == blocker_phase::virtualcam) {
-			if (!show_user_blockers_list) {
+			if (shown_blocker_kind) {
 				this->blocker_events->blocker_wait_complete();
-				show_user_blockers_list = true;
+				shown_blocker_kind.reset();
 				process_list_text = L"";
 			}
 			current_blocker_phase = blocker_phase::generic;
@@ -913,17 +1003,11 @@ void update_client::process_manifest_results()
 		if (blockers.list.size() > 0) {
 			auto blocker_details = get_blocker_details(blockers);
 
-			std::wstring new_process_list_text;
-			for (auto &info : blocker_details) {
-				new_process_list_text += info.app_name;
-				new_process_list_text += L" (";
-				new_process_list_text += std::to_wstring(info.pid);
-				new_process_list_text += L")\r\n";
-			}
+			std::wstring new_process_list_text = format_blocker_list(blocker_details);
 
-			if (show_user_blockers_list) {
-				show_user_blockers_list = false;
-				this->blocker_events->blocker_start(false);
+			if (shown_blocker_kind != blocker_kind::generic) {
+				shown_blocker_kind = blocker_kind::generic;
+				this->blocker_events->blocker_start(blocker_kind::generic);
 			}
 
 			bool list_changed = process_list_text.compare(new_process_list_text) != 0;
@@ -961,10 +1045,25 @@ void update_client::process_manifest_results()
 			wait_for_blockers.expires_after(std::chrono::seconds(1));
 			wait_for_blockers.async_wait([this](const boost::system::error_code &) { process_manifest_results(); });
 			return;
-		} else {
+		} else if (current_blocker_phase == blocker_phase::generic) {
 			this->blocker_events->blocker_wait_complete();
-			show_user_blockers_list = true;
+			shown_blocker_kind.reset();
 			process_list_text = L"";
+			current_blocker_phase = blocker_phase::hook;
+		}
+
+		/* Phase 3: the shared graphics hook directory. Last, so a user
+		 * who cancels over a blocker they have to close is never asked
+		 * about one they may decline. */
+		if (current_blocker_phase == blocker_phase::hook) {
+			if (!process_hook_blockers())
+				return;
+
+			if (shown_blocker_kind) {
+				this->blocker_events->blocker_wait_complete();
+				shown_blocker_kind.reset();
+				process_list_text = L"";
+			}
 			current_blocker_phase = blocker_phase::virtualcam;
 		}
 
@@ -1036,61 +1135,18 @@ void update_client::start_downloading_files()
 	}
 }
 
-template<class ConstBuffer> static size_t handle_manifest_read_buffer(manifest_map_t &map, const ConstBuffer &buffer)
-{
-	/* TODO: Hardcoded for SHA-256 checksums. */
-	static const regex manifest_regex("([A-Fa-f0-9]{64}) ([^\r\n]+)\r?\n");
-
-	size_t accum = 0;
-
-	for (;;) {
-		const char *buf;
-		std::string checksum;
-		std::string file;
-		cmatch matches;
-		size_t buf_size = buffer.size() - accum;
-
-		/* Technically, this for loop will
-		 * always iterate once and then hit this
-		 * the second time around. */
-		if (buf_size == 0)
-			break;
-
-		buf = (const char *)buffer.data() + accum;
-
-		bool regex_result = regex_search(&buf[0], &buf[buf_size], matches, manifest_regex);
-
-		if (!regex_result) {
-			/* FIXME TODO
-			 * This should never ever happen the way
-			 * the code is currently formatted. If
-			 * this happens, either the buffers are
-			 * given incorrectly or the manifest is
-			 * malformed. This should be a fatal error.
-			 * That said, if we ever go back to dynamic
-			 * buffers, we should instead figure out
-			 * a way to store the section of the previous
-			 * buffer that we weren't able to fully parse.
-			 * Right now, we assume a singular contiguous
-			 * buffer (usually around 20kB total for a
-			 * 1000+ line manifest). */
-			break;
-		}
-
-		file.assign(matches[2].first, matches[2].length());
-		checksum.assign(matches[1].first, matches[1].length());
-		map.emplace(std::make_pair(file, manifest_entry_t(checksum)));
-
-		accum += matches.length();
-	}
-
-	return accum;
-}
-
 void update_client::handle_manifest_result(std::shared_ptr<manifest_request<manifest_body>> request_ctx, std::string manifest_content)
 {
-	(void)request_ctx; // held only to keep the request alive across the async hop
-	handle_manifest_read_buffer(manifest, manifest_content);
+	(void)request_ctx;
+	manifest_map_t parsed;
+	std::string parse_error;
+	if (!parse_update_manifest(manifest_content, parsed, parse_error)) {
+		const std::string message = "Invalid update manifest: " + parse_error;
+		handle_manifest_content_error(message);
+		return;
+	}
+
+	manifest = std::move(parsed);
 
 	log_info("Successfuly downloaded manifest. It has info about %d files", manifest.size());
 
@@ -1132,27 +1188,30 @@ update_file_t::update_file_t(const fs::path &file_path) : file_path(file_path), 
 void update_client::handle_file_result(std::shared_ptr<file_request<http::dynamic_body>> request_ctx, update_file_t *file_ctx, int index)
 {
 	auto &filter = file_ctx->checksum_filter;
+	std::string error_message;
 
 	try {
 		file_ctx->output_chain.reset();
 
-		static const char hex_chars[] = "0123456789abcdef";
-		std::string hex_digest;
-		hex_digest.reserve(SHA256_DIGEST_LENGTH * 2);
-		for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-			hex_digest.push_back(hex_chars[filter.digest[i] >> 4]);
-			hex_digest.push_back(hex_chars[filter.digest[i] & 0x0F]);
-		}
+		std::string hex_digest = to_hex(filter.digest, SHA256_DIGEST_LENGTH);
 
 		const std::string &expected = request_ctx->expected_hash;
 		if (!expected.empty() && hex_digest != expected) {
-			log_error("Downloaded file checksum mismatch for %s, expected %s, got %s", request_ctx->target.c_str(), expected.c_str(),
-				  hex_digest.c_str());
+			error_message = "Downloaded file checksum mismatch for " + request_ctx->target + ", expected " + expected + ", got " + hex_digest;
+			log_error("%s", error_message.c_str());
 		}
+	} catch (const std::exception &e) {
+		error_message = "Failed to finalize downloaded file " + request_ctx->target + ": " + e.what();
 	} catch (...) {
+		error_message = "Failed to finalize downloaded file " + request_ctx->target;
 	}
 
 	delete file_ctx;
+
+	if (!error_message.empty()) {
+		handle_file_download_error(request_ctx, boost::system::errc::make_error_code(boost::system::errc::illegal_byte_sequence), error_message);
+		return;
+	}
 
 	next_manifest_entry(index);
 }
