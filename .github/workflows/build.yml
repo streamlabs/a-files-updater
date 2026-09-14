@@ -79,7 +79,7 @@ jobs:
         # hook-dir-tests is left out: it needs elevation and a real ProgramData scratch directory.
         run: |
           $config = "RelWithDebInfo"
-          foreach ($test in "report-level-tests", "manifest-tests", "file-updater-path-tests") {
+          foreach ($test in "report-level-tests", "exit-error-tests", "manifest-tests", "file-updater-path-tests") {
             & "build/$config/$test.exe"
             if ($LASTEXITCODE -ne 0) { throw "$test failed with exit code $LASTEXITCODE" }
           }

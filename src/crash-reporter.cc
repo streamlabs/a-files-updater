@@ -31,9 +31,6 @@ const std::string protocol = "https";
 //const std::string host = "127.0.0.1";
 #endif
 
-std::string last_error_category = "";
-std::string last_error_reason = "";
-
 #if !defined(SENTRY_PROJECT_KEY) || !defined(SENTRY_PROJECT_ID)
 #error "sentry project info not provided"
 #endif
@@ -107,8 +104,8 @@ std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std:
 		json_report << "	}]}, ";
 	} else if (!ExceptionInfo && minidump_result.size() == 0) {
 		json_report << "	\"exception\": {\"values\":[{";
-		json_report << "		\"type\": \"" << escapeJsonString(last_error_category) << "\", ";
-		json_report << "		\"value\": \"" << escapeJsonString(last_error_reason) << "\" ";
+		json_report << "		\"type\": \"" << escapeJsonString(get_exit_error_category()) << "\", ";
+		json_report << "		\"value\": \"" << escapeJsonString(get_exit_error_reason()) << "\" ";
 		json_report << "	}]}, ";
 	}
 	json_report << "	\"tags\": { ";
@@ -539,42 +536,20 @@ void handle_crash(struct _EXCEPTION_POINTERS *ExceptionInfo, bool callAbort) noe
 void handle_exit() noexcept
 {
 	// Nothing was buffered, so there is no exception type to report - don't post a blank event.
-	if (last_error_category.empty())
+	if (get_exit_error_category().empty())
 		return;
 
-	std::string report = prepare_crash_report(nullptr, "", level_for_report(last_error_category, last_error_reason));
+	std::string report = prepare_crash_report(nullptr, "", level_for_report(get_exit_error_category(), get_exit_error_reason()));
 
 	send_crash_to_sentry_sync(report, false);
-}
-
-void save_exit_error(const std::string &category, const std::string &reason) noexcept
-{
-	try {
-		last_error_category = category;
-		last_error_reason = reason;
-	} catch (...) {
-		// best effort; nothing to do if we can't even copy a string
-	}
 }
 
 void report_handled_error(const std::string &category, const std::string &reason) noexcept
 {
 	// handle_exit() is skipped on the success path, so send now instead of buffering; do it
 	// off-thread so a slow/hung connect can't block the updater (best-effort).
-	std::string buffered_category;
-	std::string buffered_reason;
-	try {
-		buffered_category = last_error_category;
-		buffered_reason = last_error_reason;
-	} catch (...) {
-		// best effort, same as save_exit_error(); a failed snapshot only costs us the buffered report
-	}
-
-	save_exit_error(category, reason);
+	scoped_exit_error handled_error(category, reason);
 	std::string report = prepare_crash_report(nullptr, "", level_for_report(category, reason));
-
-	// Leave whatever handle_exit() still has to report in place.
-	save_exit_error(buffered_category, buffered_reason);
 
 	try {
 		std::thread([report]() { send_crash_to_sentry_sync(report, false); }).detach();

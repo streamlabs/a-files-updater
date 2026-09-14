@@ -266,6 +266,28 @@ target_compile_definitions(report-level-tests
 	-D_UNICODE
 )
 
+add_executable(exit-error-tests
+	test/native/exit-error-tests.cc
+	src/exit-error.cc
+)
+
+target_compile_options(exit-error-tests PRIVATE $<IF:$<CONFIG:Debug>,-MTd,-MT> -W3 -Zi)
+
+set_property(TARGET exit-error-tests PROPERTY CXX_STANDARD 17)
+set_property(TARGET exit-error-tests PROPERTY CXX_STANDARD_REQUIRED ON)
+
+target_include_directories(exit-error-tests PRIVATE src)
+
+target_compile_definitions(exit-error-tests
+	PRIVATE
+	-D_WIN32_WINNT=0x0A00
+	-DWINVER=0x0A00
+	-DNOMINMAX
+	-DWIN32_LEAN_AND_MEAN
+	-DUNICODE
+	-D_UNICODE
+)
+
 # Install
 install(FILES $<TARGET_PDB_FILE:slobs-updater> DESTINATION ${CMAKE_INSTALL_PREFIX} OPTIONAL)
 
