@@ -845,6 +845,33 @@ void run_complete_marker_rejects_a_squatter(const fs::path &scratch)
 	CHECK(file_exists(squatted));
 }
 
+void run_complete_marker_rejects_a_reparse_point(const fs::path &scratch)
+{
+	Case c(scratch, "run_complete_marker_rejects_a_reparse_point");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path run = root / L"run-00000000000000000000000000000001";
+	const fs::path elsewhere = c.root / L"elsewhere";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(prepare_updater_temp_dir(run, false));
+	write_file(elsewhere, "theirs");
+
+	std::error_code ec;
+	fs::create_symlink(elsewhere, run / L".update-complete", ec);
+	if (ec) {
+		printf("      skipped: could not create a symlink (%d)\n", ec.value());
+		return;
+	}
+
+	CHECK(!mark_updater_run_complete(run));
+
+	fs::create_directories(run / L"old-files", ec);
+	fs::last_write_time(run, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+
+	prune_updater_runs(root);
+	CHECK(file_exists(run));
+}
+
 void a_held_child_does_not_strand_its_siblings(const fs::path &scratch)
 {
 	Case c(scratch, "a_held_child_does_not_strand_its_siblings");
@@ -1529,6 +1556,7 @@ int wmain(int argc, wchar_t **argv)
 	completed_run_with_a_backup_is_pruned_after_a_day(scratch);
 	completed_marker_survives_a_failed_cleanup(scratch);
 	run_complete_marker_rejects_a_squatter(scratch);
+	run_complete_marker_rejects_a_reparse_point(scratch);
 	a_held_child_does_not_strand_its_siblings(scratch);
 	updater_root_quarantine_sweep_is_non_recursive(scratch);
 	active_updater_run_is_not_pruned(scratch);
