@@ -65,6 +65,30 @@ cmake --build build --target file-updater-path-tests --config Debug
 build\Debug\file-updater-path-tests.exe
 ```
 
+Report severity has a native test of its own. It locks in the level every
+Sentry category is sent with: `fatal` when the install was left half-written,
+`error` when the update did not complete or an exposure is still open,
+`warning` when the update went through but left something behind, and `info`
+when the user or policy declined. A cancelled update is `info`, not `error`.
+Unknown categories stay `error`.
+
+```
+cmake --build build --target report-level-tests --config Debug
+build\Debug\report-level-tests.exe
+```
+
+The buffered exit error also has a native test of its own. It covers the
+snapshot/restore that lets a handled report (e.g. the unconditional hook
+repair) go out without clobbering an update failure still waiting for
+`handle_exit()`: the guard reports its own category while active, the prior
+category and reason come back once it leaves scope, nested guards unwind in
+order, and the buffer starts empty.
+
+```
+cmake --build build --target exit-error-tests --config Debug
+build\Debug\exit-error-tests.exe
+```
+
 ## Graphics hook directory
 
 The repair of `%ProgramData%\obs-studio-hook` is covered in two places, both of
