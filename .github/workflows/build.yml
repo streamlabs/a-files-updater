@@ -74,6 +74,15 @@ jobs:
           RELEASE_VERSION: ${{ steps.get_version.outputs.VERSION }}
       - name: Build
         run: cmake --build "build" --target install --config RelWithDebInfo
+      - name: Run native tests
+        shell: pwsh
+        # hook-dir-tests is left out: it needs elevation and a real ProgramData scratch directory.
+        run: |
+          $config = "RelWithDebInfo"
+          foreach ($test in "report-level-tests", "manifest-tests", "file-updater-path-tests") {
+            & "build/$config/$test.exe"
+            if ($LASTEXITCODE -ne 0) { throw "$test failed with exit code $LASTEXITCODE" }
+          }
       - name: Upload unsigned distribute
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4

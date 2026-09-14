@@ -65,6 +65,18 @@ cmake --build build --target file-updater-path-tests --config Debug
 build\Debug\file-updater-path-tests.exe
 ```
 
+Report severity has a native test of its own. It locks in the level every
+Sentry category is sent with: `fatal` when the install was left half-written,
+`error` when the update did not complete or an exposure is still open,
+`warning` when the update went through but left something behind, and `info`
+when the user or policy declined. A cancelled update is `info`, not `error`.
+Unknown categories stay `error`.
+
+```
+cmake --build build --target report-level-tests --config Debug
+build\Debug\report-level-tests.exe
+```
+
 ## Graphics hook directory
 
 The repair of `%ProgramData%\obs-studio-hook` is covered in two places, both of

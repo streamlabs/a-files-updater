@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "crash-reporter.hpp"
+#include "report-level.hpp"
 #include "update-parameters.hpp"
 
 using boost::asio::ip::tcp;
@@ -56,7 +57,7 @@ std::string get_logs_json() noexcept;
 
 double get_time_from_start() noexcept;
 
-std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result) noexcept;
+std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result, report_level level) noexcept;
 int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump) noexcept;
 
 void save_start_timestamp();
@@ -78,7 +79,7 @@ std::string GetWindowsVersionString();
 #include "dbghelp.h"
 #pragma comment(lib, "Dbghelp.lib")
 
-std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result) noexcept
+std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result, report_level level) noexcept
 {
 	std::ostringstream json_report;
 	/* Crash handler runs on the faulting thread (possibly a worker) and must not
@@ -89,6 +90,7 @@ std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std:
 	json_report << "	\"event_id\": \"" << get_uuid() << "\", ";
 	json_report << "	\"release\": \"" << get_version() << "\", ";
 	json_report << "	\"timestamp\": \"" << get_timestamp() << "\", ";
+	json_report << "	\"level\": \"" << report_level_name(level) << "\", ";
 	if (send_manual_backtrace) {
 		json_report << "	\"exception\": {\"values\":[{";
 		if (ExceptionInfo) {
@@ -521,7 +523,7 @@ void handle_crash(struct _EXCEPTION_POINTERS *ExceptionInfo, bool callAbort) noe
 
 	std::string minidump_result = create_mini_dump(ExceptionInfo);
 
-	std::string report = prepare_crash_report(ExceptionInfo, minidump_result);
+	std::string report = prepare_crash_report(ExceptionInfo, minidump_result, report_level::fatal);
 
 	send_crash_to_sentry_sync(report);
 
@@ -536,7 +538,11 @@ void handle_crash(struct _EXCEPTION_POINTERS *ExceptionInfo, bool callAbort) noe
 
 void handle_exit() noexcept
 {
-	std::string report = prepare_crash_report(nullptr, "");
+	// Nothing was buffered, so there is no exception type to report - don't post a blank event.
+	if (last_error_category.empty())
+		return;
+
+	std::string report = prepare_crash_report(nullptr, "", level_for_report(last_error_category, last_error_reason));
 
 	send_crash_to_sentry_sync(report, false);
 }
@@ -555,8 +561,21 @@ void report_handled_error(const std::string &category, const std::string &reason
 {
 	// handle_exit() is skipped on the success path, so send now instead of buffering; do it
 	// off-thread so a slow/hung connect can't block the updater (best-effort).
+	std::string buffered_category;
+	std::string buffered_reason;
+	try {
+		buffered_category = last_error_category;
+		buffered_reason = last_error_reason;
+	} catch (...) {
+		// best effort, same as save_exit_error(); a failed snapshot only costs us the buffered report
+	}
+
 	save_exit_error(category, reason);
-	std::string report = prepare_crash_report(nullptr, "");
+	std::string report = prepare_crash_report(nullptr, "", level_for_report(category, reason));
+
+	// Leave whatever handle_exit() still has to report in place.
+	save_exit_error(buffered_category, buffered_reason);
+
 	try {
 		std::thread([report]() { send_crash_to_sentry_sync(report, false); }).detach();
 	} catch (...) {
