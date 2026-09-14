@@ -29,6 +29,7 @@ const size_t file_buffer_size = 4096;
 #include "file-updater.h"
 #include "hook-permissions.hpp"
 #include "manifest-parser.hpp"
+#include "updater-storage.hpp"
 
 /*##############################################
  *#
@@ -50,6 +51,12 @@ void update_client::start_file_update()
 			updater.update();
 
 			log_info("Finished updating files without errors.");
+
+			/* Reaching this line is verified success: update() throws
+			 * unless every file re-hashed. Every failure leaves through
+			 * revert() below, which still needs the backup. */
+			if (!mark_updater_run_complete(params->temp_dir))
+				log_warn("Could not mark the updater run complete; its backup will be held for the full recovery window.");
 
 			/* Before success(), which tears the window down: this is
 			 * the last point at which there is a UI to show it in.

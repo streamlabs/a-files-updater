@@ -754,6 +754,129 @@ void stale_updater_runs_are_pruned(const fs::path &scratch)
 	CHECK(!file_exists(claimed));
 }
 
+void completed_run_with_a_backup_is_pruned_after_a_day(const fs::path &scratch)
+{
+	Case c(scratch, "completed_run_with_a_backup_is_pruned_after_a_day");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path completed = root / L"run-00000000000000000000000000000001";
+	const fs::path interrupted = root / L"run-00000000000000000000000000000002";
+	const fs::path forgotten = root / L"run-00000000000000000000000000000003";
+	const fs::path recent = root / L"run-00000000000000000000000000000004";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(prepare_updater_temp_dir(completed, false));
+	CHECK(prepare_updater_temp_dir(interrupted, false));
+	CHECK(prepare_updater_temp_dir(forgotten, false));
+	CHECK(prepare_updater_temp_dir(recent, false));
+
+	std::error_code ec;
+	fs::create_directories(completed / L"old-files", ec);
+	fs::create_directories(interrupted / L"old-files", ec);
+	fs::create_directories(forgotten / L"old-files", ec);
+	fs::create_directories(recent / L"old-files", ec);
+	CHECK(mark_updater_run_complete(completed));
+	CHECK(mark_updater_run_complete(recent));
+
+	/* Ages last: the backup and the marker both bump the run's mtime. */
+	const auto now = fs::file_time_type::clock::now();
+	fs::last_write_time(completed, now - std::chrono::hours(48), ec);
+	fs::last_write_time(interrupted, now - std::chrono::hours(48), ec);
+	fs::last_write_time(forgotten, now - std::chrono::hours(24 * 8), ec);
+	fs::last_write_time(recent, now - std::chrono::hours(12), ec);
+
+	prune_updater_runs(root);
+	CHECK(!file_exists(completed));
+	CHECK(file_exists(interrupted));
+	CHECK(!file_exists(forgotten));
+	CHECK(file_exists(recent));
+}
+
+void completed_marker_survives_a_failed_cleanup(const fs::path &scratch)
+{
+	Case c(scratch, "completed_marker_survives_a_failed_cleanup");
+	const fs::path temp_dir = c.root / L"run";
+	const fs::path log = temp_dir / L"slobs-updater.log";
+	const fs::path locked = temp_dir / L"locked.dll";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	write_file(log, "diagnostic log");
+	write_file(locked, "locked");
+	CHECK(mark_updater_run_complete(temp_dir));
+	HANDLE held = hold_open(locked);
+	if (held == INVALID_HANDLE_VALUE) {
+		CHECK(false);
+		return;
+	}
+
+	/* Removing the marker here would put a run that still has its backup back
+	 * on the seven-day rule. */
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(!cleanup_updater_temp_dir(temp_dir, true, &diagnostics));
+	CHECK(file_exists(temp_dir / L".update-complete"));
+	CHECK(file_exists(log));
+
+	CloseHandle(held);
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
+void run_complete_marker_rejects_a_squatter(const fs::path &scratch)
+{
+	Case c(scratch, "run_complete_marker_rejects_a_squatter");
+	const fs::path root = c.root / L"updater-root";
+	const fs::path run = root / L"run-00000000000000000000000000000001";
+	const fs::path squatted = root / L"run-00000000000000000000000000000002";
+
+	CHECK(prepare_updater_temp_dir(root, false));
+	CHECK(prepare_updater_temp_dir(run, false));
+	CHECK(prepare_updater_temp_dir(squatted, false));
+
+	CHECK(mark_updater_run_complete(run));
+	CHECK(mark_updater_run_complete(run));
+
+	std::error_code ec;
+	CHECK(fs::create_directory(squatted / L".update-complete", ec));
+	CHECK(!mark_updater_run_complete(squatted));
+
+	fs::create_directories(squatted / L"old-files", ec);
+	fs::last_write_time(squatted, fs::file_time_type::clock::now() - std::chrono::hours(48), ec);
+
+	prune_updater_runs(root);
+	CHECK(file_exists(squatted));
+}
+
+void a_held_child_does_not_strand_its_siblings(const fs::path &scratch)
+{
+	Case c(scratch, "a_held_child_does_not_strand_its_siblings");
+	const fs::path temp_dir = c.root / L"run";
+	const fs::path staged = temp_dir / L"new-files";
+	const fs::path backup = temp_dir / L"old-files";
+	const fs::path locked = staged / L"locked.dll";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+
+	std::error_code ec;
+	fs::create_directories(staged, ec);
+	fs::create_directories(backup, ec);
+	write_file(locked, "locked");
+	write_file(backup / L"payload.dll", "payload");
+	HANDLE held = hold_open(locked);
+	if (held == INVALID_HANDLE_VALUE) {
+		CHECK(false);
+		return;
+	}
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(!cleanup_updater_temp_dir(temp_dir, true, &diagnostics));
+	CHECK(file_exists(locked));
+	CHECK(!file_exists(backup));
+	CHECK(diagnostics.failure.find(L"new-files") != std::wstring::npos);
+
+	CloseHandle(held);
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
 void updater_root_quarantine_sweep_is_non_recursive(const fs::path &scratch)
 {
 	Case c(scratch, "updater_root_quarantine_sweep_is_non_recursive");
@@ -1403,6 +1526,10 @@ int wmain(int argc, wchar_t **argv)
 	preview_ancestor_policy_is_used_for_cleanup(scratch);
 	preview_ancestor_policy_is_used_for_pruning(scratch);
 	stale_updater_runs_are_pruned(scratch);
+	completed_run_with_a_backup_is_pruned_after_a_day(scratch);
+	completed_marker_survives_a_failed_cleanup(scratch);
+	run_complete_marker_rejects_a_squatter(scratch);
+	a_held_child_does_not_strand_its_siblings(scratch);
 	updater_root_quarantine_sweep_is_non_recursive(scratch);
 	active_updater_run_is_not_pruned(scratch);
 	untrusted_stale_run_is_not_pruned(scratch);

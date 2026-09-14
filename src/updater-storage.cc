@@ -13,14 +13,17 @@
 #include "hook-permissions.hpp"
 #include "logger/log.h"
 #include "security-random.hpp"
+#include "update-blockers.hpp"
 
 namespace {
 
 const wchar_t *const kUpdaterDirSddl = L"O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 const wchar_t *const kRunLockName = L".run-lock";
 const wchar_t *const kUpdaterLogName = L"slobs-updater.log";
+const wchar_t *const kRunCompleteName = L".update-complete";
 constexpr auto kAbandonedRunAge = std::chrono::hours(24);
 constexpr auto kRecoveryRunAge = std::chrono::hours(24 * 7);
+constexpr int kHolderProbeLimit = 16;
 
 enum class PrepareResult { Ready, Collision, Failed };
 enum class ClaimResult { Claimed, Active, Gone, Failed };
@@ -227,6 +230,17 @@ bool prune_leaf(const fs::path &path)
 	return true;
 }
 
+/* Not fs::exists: that follows a link, and neither a squatted directory nor a
+ * reparse point may read as a finished run. */
+bool run_is_complete(const fs::path &run)
+{
+	const DWORD attributes = GetFileAttributesW((run / kRunCompleteName).c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+		return false;
+
+	return (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
+}
+
 bool quarantine_leaf(const fs::path &root, const fs::path &path)
 {
 	const std::wstring prefix = root.filename().wstring() + L".quarantine-";
@@ -341,6 +355,47 @@ ClaimResult claim_updater_run(const fs::path &run, fs::path &claimed, std::wstri
 	return ClaimResult::Failed;
 }
 
+/* Failure path only: RmGetList is far too slow to run on a cleanup that worked.
+ * A directory is probed through its first few files, since the Restart Manager
+ * registers files rather than directories. */
+std::vector<blocker_info> child_holders(const fs::path &child, bool is_directory)
+{
+	blockers_map_t blockers;
+
+	if (!is_directory) {
+		fs::path file = child;
+		get_blockers_list(file, blockers);
+		return get_blocker_details(blockers);
+	}
+
+	std::error_code ec;
+	int probed = 0;
+	fs::recursive_directory_iterator iter(child, fs::directory_options::skip_permission_denied, ec);
+	const fs::recursive_directory_iterator end;
+	while (!ec && iter != end && probed < kHolderProbeLimit) {
+		std::error_code type_error;
+		if (iter->is_regular_file(type_error) && !type_error) {
+			fs::path file = iter->path();
+			get_blockers_list(file, blockers);
+			probed++;
+		}
+		iter.increment(ec);
+	}
+
+	return get_blocker_details(blockers);
+}
+
+std::wstring describe_holders(const std::vector<blocker_info> &holders)
+{
+	std::wstring text;
+	for (const blocker_info &holder : holders) {
+		if (!text.empty())
+			text += L", ";
+		text += holder.app_name + L" (" + std::to_wstring(holder.pid) + L")";
+	}
+	return text;
+}
+
 } // namespace
 
 fs::path programdata_updater_root()
@@ -419,6 +474,33 @@ bool remove_updater_run_lock(const fs::path &dir, UpdaterStorageDiagnostics *dia
 	return false;
 }
 
+/* Never reports through UpdaterStorageDiagnostics: the update has already
+ * succeeded by the time this runs, and a missing marker only costs retention. */
+bool mark_updater_run_complete(const fs::path &dir)
+{
+	const fs::path marker = dir / kRunCompleteName;
+	HANDLE handle = CreateFileW(marker.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+	if (handle == INVALID_HANDLE_VALUE) {
+		const std::wstring reason = L"Could not write updater run marker " + marker.wstring() + L": " + format_hex32(GetLastError());
+		wlog_warn(L"%s", reason.c_str());
+		return false;
+	}
+
+	FILE_ATTRIBUTE_TAG_INFO tag = {};
+	const bool readable = GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &tag, sizeof(tag)) != 0;
+	const DWORD error = readable ? ERROR_SUCCESS : GetLastError();
+	if (!readable || (tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+		CloseHandle(handle);
+		const std::wstring reason =
+			L"Refusing unexpected updater run marker " + marker.wstring() + (error == ERROR_SUCCESS ? L"" : L": " + format_hex32(error));
+		wlog_warn(L"%s", reason.c_str());
+		return false;
+	}
+
+	CloseHandle(handle);
+	return true;
+}
+
 bool prepare_updater_root(const fs::path &root, UpdaterStorageDiagnostics *diagnostics)
 {
 	UpdaterStorageDiagnostics check;
@@ -482,7 +564,12 @@ void prune_updater_runs(const fs::path &root, bool enforce_ancestors, UpdaterSto
 		if (backup_error)
 			continue;
 
-		const auto retention = has_backup ? kRecoveryRunAge : kAbandonedRunAge;
+		/* A backup is only a rollback source until the run that made it
+		 * finishes; after that it is worth no more than no backup at all. */
+		const bool completed = run_is_complete(entry.path());
+		const bool rollback_source = has_backup && !completed;
+
+		const auto retention = rollback_source ? kRecoveryRunAge : kAbandonedRunAge;
 		if (now - modified < retention)
 			continue;
 
@@ -594,13 +681,17 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 	}
 
 	const fs::path log = dir / kUpdaterLogName;
+	const fs::path complete = dir / kRunCompleteName;
 	std::vector<fs::path> children;
 	std::error_code ec;
 	fs::directory_iterator iter(dir, ec);
 	const fs::directory_iterator end;
 	while (!ec && iter != end) {
+		/* The marker outlives a failed cleanup on purpose: removing it while
+		 * the backup survives would put the run back on the seven-day rule. */
 		const fs::directory_entry &entry = *iter;
-		if (entry.path().filename() != kUpdaterLogName)
+		const fs::path name = entry.path().filename();
+		if (name != kUpdaterLogName && name != kRunCompleteName)
 			children.push_back(entry.path());
 		iter.increment(ec);
 	}
@@ -611,16 +702,39 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		return false;
 	}
 
+	fs::path stuck;
+	bool stuck_is_directory = false;
+	int stuck_error = 0;
+	size_t stuck_count = 0;
 	for (const fs::path &child : children) {
 		ec.clear();
 		fs::remove_all(child, ec);
-		if (ec) {
-			std::wstring reason = L"Failed to clean updater run " + dir.wstring() + L": " + format_hex32(ec.value());
-			if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
-				reason += L"; updater log retained at " + log.wstring();
-			set_failure(diagnostics, reason);
-			return false;
+		if (!ec)
+			continue;
+
+		/* Keep going: one held child must not strand its siblings, or a stuck
+		 * new-files leaves the backup behind with it. */
+		if (stuck_count++ == 0) {
+			std::error_code type_error;
+			stuck = child;
+			stuck_is_directory = fs::is_directory(child, type_error) && !type_error;
+			stuck_error = ec.value();
 		}
+	}
+	if (stuck_count != 0) {
+		std::wstring reason = L"Failed to clean updater run " + dir.wstring() + L": " + (stuck_is_directory ? L"directory " : L"file ") +
+				      stuck.wstring() + L" could not be removed: " + format_hex32(stuck_error);
+		if (stuck_count > 1)
+			reason += L" (" + std::to_wstring(stuck_count) + L" children failed)";
+
+		const std::vector<blocker_info> holders = child_holders(stuck, stuck_is_directory);
+		log_blockers("Updater run child is held open by", holders);
+		if (!holders.empty())
+			reason += L"; held by " + describe_holders(holders);
+		if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+			reason += L"; updater log retained at " + log.wstring();
+		set_failure(diagnostics, reason);
+		return false;
 	}
 
 	if (RemoveDirectoryW(dir.c_str()))
@@ -636,6 +750,8 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		set_failure(diagnostics, reason);
 		return false;
 	}
+
+	DeleteFileW(complete.c_str());
 
 	if (!DeleteFileW(log.c_str())) {
 		error = GetLastError();
