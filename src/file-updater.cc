@@ -49,7 +49,7 @@ FileUpdater::~FileUpdater()
 
 	fs::remove_all(m_old_files_dir, ec);
 	if (ec) {
-		wlog_warn(L"Failed to cleanup temp folder.");
+		wlog_warn(L"Failed to cleanup backup folder %s: 0x%08X %S", m_old_files_dir.c_str(), ec.value(), ec.message().c_str());
 	}
 }
 

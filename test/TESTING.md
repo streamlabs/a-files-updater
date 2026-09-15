@@ -105,6 +105,12 @@ an untrusted parent, an install directory nobody should publish from. It also
 covers unidentified directory and foreign-file handles, an ACL-only rename
 refusal, and verified removal of both per-user Vulkan registry views.
 
+The run-retention cases live here too: a finished run keeps its rollback backup
+for a day rather than a week, the `.update-complete` marker that says so
+survives a cleanup that could not finish, a directory squatting on the marker's
+name is not read as a finished run, and a child held open by another process no
+longer strands its siblings.
+
 ```
 cmake --build build --target hook-dir-tests --config Debug
 build\Debug\hook-dir-tests.exe

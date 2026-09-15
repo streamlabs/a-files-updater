@@ -29,6 +29,7 @@ const size_t file_buffer_size = 4096;
 #include "file-updater.h"
 #include "hook-permissions.hpp"
 #include "manifest-parser.hpp"
+#include "updater-storage.hpp"
 
 /*##############################################
  *#
@@ -59,8 +60,14 @@ void update_client::start_file_update()
 				updater_events->hook_repair_start();
 			report_hook_repair(publish_hook_payload(params->app_dir, params->hook_dir, hook_state));
 
-			client_events->success();
+			/* Nothing left here can send us through revert(), so mark
+			 * complete now - a later throw must not undo a finished
+			 * update just because this best-effort write failed. */
 			updated = true;
+			if (!mark_updater_run_complete(params->temp_dir))
+				log_warn("Could not mark the updater run complete; its backup will be held for the full recovery window.");
+
+			client_events->success();
 		}
 	} catch (std::exception &e) {
 		log_error("Got error while updating files: %s.", e.what());
