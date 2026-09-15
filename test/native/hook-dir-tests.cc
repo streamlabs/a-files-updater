@@ -845,6 +845,49 @@ void run_complete_marker_rejects_a_squatter(const fs::path &scratch)
 	CHECK(file_exists(squatted));
 }
 
+void cleanup_removes_a_marker_squatting_directory(const fs::path &scratch)
+{
+	Case c(scratch, "cleanup_removes_a_marker_squatting_directory");
+	const fs::path temp_dir = c.root / L"run";
+	const fs::path squatter = temp_dir / L".update-complete";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	write_file(temp_dir / L"slobs-updater.log", "diagnostic log");
+
+	std::error_code ec;
+	CHECK(fs::create_directory(squatter, ec));
+	write_file(squatter / L"planted.dll", "theirs");
+
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
+void held_marker_blocks_cleanup_and_names_itself(const fs::path &scratch)
+{
+	Case c(scratch, "held_marker_blocks_cleanup_and_names_itself");
+	const fs::path temp_dir = c.root / L"run";
+	const fs::path marker = temp_dir / L".update-complete";
+
+	CHECK(prepare_updater_temp_dir(temp_dir, false));
+	write_file(temp_dir / L"slobs-updater.log", "diagnostic log");
+	CHECK(mark_updater_run_complete(temp_dir));
+
+	HANDLE held = hold_open(marker);
+	if (held == INVALID_HANDLE_VALUE) {
+		CHECK(false);
+		return;
+	}
+
+	UpdaterStorageDiagnostics diagnostics;
+	CHECK(!cleanup_updater_temp_dir(temp_dir, true, &diagnostics));
+	CHECK(diagnostics.failure.find(L".update-complete") != std::wstring::npos);
+	CHECK(file_exists(marker));
+
+	CloseHandle(held);
+	CHECK(cleanup_updater_temp_dir(temp_dir));
+	CHECK(!file_exists(temp_dir));
+}
+
 void run_complete_marker_rejects_a_reparse_point(const fs::path &scratch)
 {
 	Case c(scratch, "run_complete_marker_rejects_a_reparse_point");
@@ -1556,6 +1599,8 @@ int wmain(int argc, wchar_t **argv)
 	completed_run_with_a_backup_is_pruned_after_a_day(scratch);
 	completed_marker_survives_a_failed_cleanup(scratch);
 	run_complete_marker_rejects_a_squatter(scratch);
+	cleanup_removes_a_marker_squatting_directory(scratch);
+	held_marker_blocks_cleanup_and_names_itself(scratch);
 	run_complete_marker_rejects_a_reparse_point(scratch);
 	a_held_child_does_not_strand_its_siblings(scratch);
 	updater_root_quarantine_sweep_is_non_recursive(scratch);

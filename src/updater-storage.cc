@@ -702,6 +702,22 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		return false;
 	}
 
+	const auto report_stuck = [&](const fs::path &stuck, bool stuck_is_directory, int stuck_error, size_t stuck_count) {
+		std::wstring reason = L"Failed to clean updater run " + dir.wstring() + L": " + (stuck_is_directory ? L"directory " : L"file ") +
+				      stuck.wstring() + L" could not be removed: " + format_hex32(stuck_error);
+		if (stuck_count > 1)
+			reason += L" (" + std::to_wstring(stuck_count) + L" children failed)";
+
+		const std::vector<blocker_info> holders = child_holders(stuck, stuck_is_directory);
+		log_blockers("Updater run child is held open by", holders);
+		if (!holders.empty())
+			reason += L"; held by " + describe_holders(holders);
+		if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
+			reason += L"; updater log retained at " + log.wstring();
+		set_failure(diagnostics, reason);
+		return false;
+	};
+
 	fs::path stuck;
 	bool stuck_is_directory = false;
 	int stuck_error = 0;
@@ -721,20 +737,17 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 			stuck_error = ec.value();
 		}
 	}
-	if (stuck_count != 0) {
-		std::wstring reason = L"Failed to clean updater run " + dir.wstring() + L": " + (stuck_is_directory ? L"directory " : L"file ") +
-				      stuck.wstring() + L" could not be removed: " + format_hex32(stuck_error);
-		if (stuck_count > 1)
-			reason += L" (" + std::to_wstring(stuck_count) + L" children failed)";
+	if (stuck_count != 0)
+		return report_stuck(stuck, stuck_is_directory, stuck_error, stuck_count);
 
-		const std::vector<blocker_info> holders = child_holders(stuck, stuck_is_directory);
-		log_blockers("Updater run child is held open by", holders);
-		if (!holders.empty())
-			reason += L"; held by " + describe_holders(holders);
-		if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES)
-			reason += L"; updater log retained at " + log.wstring();
-		set_failure(diagnostics, reason);
-		return false;
+	/* The marker is only removed once every other child is gone, so a run
+	 * with a surviving backup never loses it here. */
+	ec.clear();
+	fs::remove_all(complete, ec);
+	if (ec) {
+		std::error_code type_error;
+		const bool marker_is_directory = fs::is_directory(complete, type_error) && !type_error;
+		return report_stuck(complete, marker_is_directory, ec.value(), 1);
 	}
 
 	if (RemoveDirectoryW(dir.c_str()))
@@ -750,8 +763,6 @@ bool cleanup_updater_temp_dir(const fs::path &dir, bool enforce_ancestors, Updat
 		set_failure(diagnostics, reason);
 		return false;
 	}
-
-	DeleteFileW(complete.c_str());
 
 	if (!DeleteFileW(log.c_str())) {
 		error = GetLastError();
