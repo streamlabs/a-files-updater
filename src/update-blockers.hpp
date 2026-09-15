@@ -45,5 +45,13 @@ bool get_blockers_names(blockers_map_t &blockers);
 
 std::vector<blocker_info> get_blocker_details(blockers_map_t &blockers);
 
+/* Who is holding one of our named hook files open in the shared graphics hook
+ * directory. Best effort: a directory handle, an unknown child, or an ACL
+ * refusal can block the rename without producing an entry here. */
+std::vector<blocker_info> get_hook_dir_blockers(const fs::path &hook_dir);
+
+// write the blocker list to the log, which is attached to the crash report
+void log_blockers(const char *lead, const std::vector<blocker_info> &blockers);
+
 // check if the relative file path refers to a virtual camera DLL
 bool is_virtualcam_file(const fs::path &relative_path);

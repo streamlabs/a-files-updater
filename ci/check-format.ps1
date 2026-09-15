@@ -52,15 +52,31 @@ if ($versionOutput -notmatch 'version (19|20|2[0-9])\.') {
 
 Write-Host "Using clang-format: $CLANG_FORMAT (version: $($versionOutput.Trim()))"
 
-# Collect source files, pruning excluded directories.
-# We search only under src/ and resources/ to avoid build/ trees, root cmake, etc.
-$sourceFiles = Get-ChildItem -Path src, resources -Recurse -File -Include *.h,*.hpp,*.c,*.cpp,*.m,*.mm |
+# Collect source files, pruning excluded directories. These legacy .cc files
+# predate the format gate; keep the baseline explicit so new .cc files cannot
+# silently bypass CI.
+$legacyUnformatted = @(
+    'src\fmt\format.cc',
+    'src\fmt\posix.cc',
+    'src\blocker-panel.cc',
+    'src\cli-parser.cc',
+    'src\crash-reporter.cc',
+    'src\main.cc',
+    'src\text-panel.cc',
+    'src\update-blockers.cc',
+    'src\update-client.cc'
+)
+
+# We search only under src/, resources/, and native tests to avoid build trees.
+$sourceFiles = Get-ChildItem -Path src, resources, test/native -Recurse -File -Include *.h,*.hpp,*.c,*.cc,*.cpp,*.m,*.mm |
     Where-Object {
         $fullPath = $_.FullName
+        $relativePath = [IO.Path]::GetRelativePath((Get-Location).Path, $fullPath)
         # Skip vendored subdirectories
         if ($fullPath -match '\\(argtable|fmt\\fmt|iostreams)\\') { return $false }
         # Skip anything under build/ or cmake/ dirs
         if ($fullPath -match '\\(build|cmake)\\') { return $false }
+        if ($legacyUnformatted -contains $relativePath) { return $false }
         return $true
     } |
     Select-Object -ExpandProperty FullName

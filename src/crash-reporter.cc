@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iomanip>
 #include <list>
+#include <locale>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl/error.hpp>
 #include <boost/asio/ssl/stream.hpp>
@@ -15,6 +16,7 @@
 #include <thread>
 
 #include "crash-reporter.hpp"
+#include "report-level.hpp"
 #include "update-parameters.hpp"
 
 using boost::asio::ip::tcp;
@@ -28,9 +30,6 @@ const std::string protocol = "https";
 //const std::string protocol = "1443";
 //const std::string host = "127.0.0.1";
 #endif
-
-std::string last_error_category = "";
-std::string last_error_reason = "";
 
 #if !defined(SENTRY_PROJECT_KEY) || !defined(SENTRY_PROJECT_ID)
 #error "sentry project info not provided"
@@ -55,7 +54,7 @@ std::string get_logs_json() noexcept;
 
 double get_time_from_start() noexcept;
 
-std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result) noexcept;
+std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result, report_level level) noexcept;
 int send_crash_to_sentry_sync(const std::string &report_json, bool send_minidump) noexcept;
 
 void save_start_timestamp();
@@ -77,14 +76,18 @@ std::string GetWindowsVersionString();
 #include "dbghelp.h"
 #pragma comment(lib, "Dbghelp.lib")
 
-std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result) noexcept
+std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std::string minidump_result, report_level level) noexcept
 {
 	std::ostringstream json_report;
+	/* Crash handler runs on the faulting thread (possibly a worker) and must not
+	 * depend on the process locale being set up; format everything with classic. */
+	json_report.imbue(std::locale::classic());
 
 	json_report << "{";
 	json_report << "	\"event_id\": \"" << get_uuid() << "\", ";
 	json_report << "	\"release\": \"" << get_version() << "\", ";
 	json_report << "	\"timestamp\": \"" << get_timestamp() << "\", ";
+	json_report << "	\"level\": \"" << report_level_name(level) << "\", ";
 	if (send_manual_backtrace) {
 		json_report << "	\"exception\": {\"values\":[{";
 		if (ExceptionInfo) {
@@ -101,8 +104,8 @@ std::string prepare_crash_report(struct _EXCEPTION_POINTERS *ExceptionInfo, std:
 		json_report << "	}]}, ";
 	} else if (!ExceptionInfo && minidump_result.size() == 0) {
 		json_report << "	\"exception\": {\"values\":[{";
-		json_report << "		\"type\": \"" << escapeJsonString(last_error_category) << "\", ";
-		json_report << "		\"value\": \"" << escapeJsonString(last_error_reason) << "\" ";
+		json_report << "		\"type\": \"" << escapeJsonString(get_exit_error_category()) << "\", ";
+		json_report << "		\"value\": \"" << escapeJsonString(get_exit_error_reason()) << "\" ";
 		json_report << "	}]}, ";
 	}
 	json_report << "	\"tags\": { ";
@@ -168,6 +171,7 @@ std::string GetWindowsVersionString()
 	VS_FIXEDFILEINFO *pFixedFileInfo;
 	UINT uLen;
 	std::ostringstream oss;
+	oss.imbue(std::locale::classic());
 
 	DWORD dwSize = GetFileVersionInfoSize(TEXT("kernel32.dll"), &dwHandle);
 	BYTE *pBuffer = new BYTE[dwSize];
@@ -516,7 +520,7 @@ void handle_crash(struct _EXCEPTION_POINTERS *ExceptionInfo, bool callAbort) noe
 
 	std::string minidump_result = create_mini_dump(ExceptionInfo);
 
-	std::string report = prepare_crash_report(ExceptionInfo, minidump_result);
+	std::string report = prepare_crash_report(ExceptionInfo, minidump_result, report_level::fatal);
 
 	send_crash_to_sentry_sync(report);
 
@@ -531,27 +535,22 @@ void handle_crash(struct _EXCEPTION_POINTERS *ExceptionInfo, bool callAbort) noe
 
 void handle_exit() noexcept
 {
-	std::string report = prepare_crash_report(nullptr, "");
+	// Nothing was buffered, so there is no exception type to report - don't post a blank event.
+	if (get_exit_error_category().empty())
+		return;
+
+	std::string report = prepare_crash_report(nullptr, "", level_for_report(get_exit_error_category(), get_exit_error_reason()));
 
 	send_crash_to_sentry_sync(report, false);
-}
-
-void save_exit_error(const std::string &category, const std::string &reason) noexcept
-{
-	try {
-		last_error_category = category;
-		last_error_reason = reason;
-	} catch (...) {
-		// best effort; nothing to do if we can't even copy a string
-	}
 }
 
 void report_handled_error(const std::string &category, const std::string &reason) noexcept
 {
 	// handle_exit() is skipped on the success path, so send now instead of buffering; do it
 	// off-thread so a slow/hung connect can't block the updater (best-effort).
-	save_exit_error(category, reason);
-	std::string report = prepare_crash_report(nullptr, "");
+	scoped_exit_error handled_error(category, reason);
+	std::string report = prepare_crash_report(nullptr, "", level_for_report(category, reason));
+
 	try {
 		std::thread([report]() { send_crash_to_sentry_sync(report, false); }).detach();
 	} catch (...) {
@@ -705,6 +704,9 @@ std::string get_logs_json() noexcept
 {
 	std::list<std::string> last_logs;
 	try {
+		if (!params.startup_diagnostic.empty())
+			last_logs.push_back(std::string("\"") + escapeJsonString(params.startup_diagnostic) + std::string("\""));
+
 		std::ifstream logfile(params.log_file_path);
 
 		std::string logline;

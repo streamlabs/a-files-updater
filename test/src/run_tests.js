@@ -4,7 +4,16 @@ const test_config = require('./test_config.js');
 const fse = require('fs-extra')
 const path = require('path');
 
-const run_one_test = true;
+const runner_arguments = process.argv.slice(2);
+const unknown_arguments = runner_arguments.filter(argument => argument !== '--run-one-test');
+
+if (unknown_arguments.length > 0) {
+    console.error(`Unknown argument(s): ${unknown_arguments.join(', ')}`);
+    console.error('Usage: yarn node src\\run_tests.js [--run-one-test]');
+    process.exit(2);
+}
+
+const run_one_test = runner_arguments.includes('--run-one-test');
 
 async function run_tests() {
     let testinfo;
@@ -233,6 +242,27 @@ async function run_tests() {
         test_result = await run_test.test_update(testinfo);
         testinfo.corruptBackuped = true;
         testinfo.expectedResult = "filescorrupted"
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
+        testinfo = test_config.gettestinfo(" //untrusted graphics hook directory is secured ");
+        testinfo.hookDirTest = true;
+        testinfo.expectedHookDirSecured = true;
+        testinfo.expectedHookReport = "";
+        test_result = await run_test.test_update(testinfo);
+        if (test_result != 0) {
+            failed_test_names.push(testinfo.testName);
+        }
+
+        testinfo = test_config.gettestinfo(" //graphics hook held open, update goes ahead without the repair ");
+        testinfo.hookDirTest = true;
+        testinfo.hookDirBlocked = true;
+        testinfo.expectedHookDirSecured = false;
+        // no expectedHookReport: the crash reporter posts to sentry.io, not to the
+        // emulator, so nothing arrives here. HookQuarantineAccessDenied is asserted by
+        // publish_reports_blocked in test/native/hook-dir-tests.cc.
+        test_result = await run_test.test_update(testinfo);
         if (test_result != 0) {
             failed_test_names.push(testinfo.testName);
         }

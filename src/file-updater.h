@@ -36,4 +36,5 @@ private:
 	const manifest_map_t &m_manifest;
 	const local_manifest_t &m_local_manifest;
 	update_client *m_update_client;
+	bool m_keep_old_files{false};
 };
