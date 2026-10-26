@@ -28,18 +28,12 @@ jobs:
     name: 'Build a package'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: Get the version
         id: get_version
         if: startsWith(github.ref, 'refs/tags/')
         run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
         shell: bash
-      - name: Install Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 16
-      - name: Install dependencies
-        run: yarn install --immutable --immutable-cache --check-cache
       - name: Set up vcpkg (pinned to manifest baseline)
         shell: pwsh
         run: |
@@ -51,7 +45,7 @@ jobs:
         run: New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/vcpkg_cache"
         shell: pwsh
       - name: Cache vcpkg binaries
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/vcpkg_cache
           key: vcpkg-${{ runner.os }}-static-${{ hashFiles('vcpkg.json') }}
@@ -60,7 +54,7 @@ jobs:
       - name: Download gettext binaries
         run: ./ci/localization_prepare_binaries.cmd
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v1.1
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
       - name: Configure
         shell: cmd
         run: |
@@ -85,13 +79,13 @@ jobs:
           }
       - name: Upload unsigned distribute
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-distribute
           path: build/distribute/a-file-updater
           retention-days: 1
       - name: Cache build
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: build
           key: ${{ runner.os }}-build-${{ github.sha }}
@@ -104,7 +98,7 @@ jobs:
     steps:
       - name: Get build from cache
         id: cache-check
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: build
           key: ${{ runner.os }}-build-${{ github.sha }}
@@ -112,7 +106,7 @@ jobs:
         if: steps.cache-check.outputs.cache-hit != 'true'
         run: exit 1
       - name: Fetch symsrv-scripts
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
         with:
           fetch-depth: 2
           repository: streamlabs/symsrv-scripts
@@ -143,7 +137,7 @@ jobs:
           Remove-Item * -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item .* -Recurse -Force -ErrorAction SilentlyContinue
         shell: powershell
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: unsigned-distribute
           path: distribute/a-file-updater
@@ -151,7 +145,7 @@ jobs:
         working-directory: distribute/a-file-updater
         run: logisign client --client logitech-cpg-sign-client --app streamlabs --files slobs-updater.exe
       - name: Upload signed distribute
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: signed-distribute
           path: distribute/a-file-updater
@@ -167,7 +161,7 @@ jobs:
         id: get_version
         run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
         shell: bash
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: signed-distribute
           path: distribute/a-file-updater
@@ -178,7 +172,7 @@ jobs:
           TARGET_ARTIFACT: slobs_updater-${{ steps.get_version.outputs.VERSION }}-win64
         shell: bash
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1-node16
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           aws-access-key-id: ${{secrets.AWS_RELEASE_ACCESS_KEY_ID}}
           aws-secret-access-key: ${{secrets.AWS_RELEASE_SECRET_ACCESS_KEY}}
