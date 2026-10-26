@@ -88,6 +88,14 @@ target_link_options(slobs-updater
 	$<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
 	$<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
 	$<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>
+
+	# Runs elevated from a user-writable dir; these load only after SetDefaultDllDirectories.
+	/DELAYLOAD:comctl32.dll
+	/DELAYLOAD:version.dll
+	/DELAYLOAD:crypt32.dll
+	/DELAYLOAD:dbghelp.dll
+	/DELAYLOAD:rstrtmgr.dll
+	/DEPENDENTLOADFLAG:0x800
 )
 
 set_property(TARGET slobs-updater PROPERTY CXX_STANDARD 17)
@@ -101,6 +109,7 @@ target_include_directories(slobs-updater
 
 target_link_libraries(slobs-updater
 	comctl32
+	delayimp
 	Psapi
 	Version
 	Boost::boost
