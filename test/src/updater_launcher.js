@@ -2,28 +2,29 @@ const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+const hook_dir = require('./hook_dir.js');
+
 exports.start_updater = async function (testinfo) {
   const updaterPath = path.join(testinfo.updaterDir, testinfo.updaterName)
   const updaterWorkPath = path.join(testinfo.updaterWorkDir, testinfo.updaterName)
-  const updaterPathE = updaterPath.replace(/\\/g, '\\\\') + "test";
-  
+  const updaterPathE = updaterPath + "test";
+
   let updateDirE;
   if (testinfo.systemFolder) {
     updateDirE = "A:\\";
   } else {
-    updateDirE = testinfo.initialDir.replace(/\\/g, '\\\\'); 
+    updateDirE = testinfo.initialDir;
   }
 
-  updateJsonFile = path.join(testinfo.serverDir, "update.json"); 
+  const updateJsonFile = path.join(testinfo.serverDir, "update.json");
   const updaterArgs = [
-    '--base-url', `"${testinfo.serverUrl}"`,
-    '--version', `"${testinfo.versionName}"`,
-    '--exec', `"${updaterPathE}"`,
-    '--cwd', `"${updateDirE}"`,
-    '--interactive', `"${testinfo.runAsInteractive}"`,
-    '--app-dir', `"${updateDirE}"`,
-    '--force-temp',
-    '--details', `"${updateJsonFile}"`
+    '--base-url', testinfo.serverUrl,
+    '--version', testinfo.versionName,
+    '--exec', updaterPathE,
+    '--cwd', updateDirE,
+    '--interactive', `${testinfo.runAsInteractive}`,
+    '--app-dir', updateDirE,
+    '--details', updateJsonFile
   ];
 
   if (testinfo.pidWaiting) {
@@ -31,6 +32,17 @@ exports.start_updater = async function (testinfo) {
       updaterArgs.push('-p');
       updaterArgs.push(pid);
     });
+  }
+
+  // keep the repair off the machine's real hook directory
+  if (testinfo.hookDirTest) {
+    updaterArgs.push('--hook-dir');
+    updaterArgs.push(hook_dir.hook_dir);
+  }
+
+  if (testinfo.hookPrompt !== undefined) {
+    updaterArgs.push('--hook-prompt');
+    updaterArgs.push(`${testinfo.hookPrompt}`);
   }
 
   if (testinfo.more_log_output)
@@ -48,8 +60,7 @@ exports.start_updater = async function (testinfo) {
   const app_spawned = cp.spawn(`${updaterWorkPath}`, updaterArgs, {
     cwd: testinfo.updaterWorkDir,
     detached: false,
-    shell: true,
-    windowsVerbatimArguments: true
+    shell: false
   });
 
   app_spawned.stdout.on('data', (data) => {
