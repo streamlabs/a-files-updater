@@ -29,7 +29,6 @@ using manifest_body = http::basic_dynamic_body<beast::flat_buffer>;
 
 template<class Body, bool IncludeVersion> struct update_http_request : public std::enable_shared_from_this<update_http_request<Body, IncludeVersion>> {
 	update_http_request(update_client *client_ctx, const std::string &target, const int id);
-	~update_http_request();
 
 	size_t download_accum{0};
 	size_t content_length{0};
@@ -39,7 +38,7 @@ template<class Body, bool IncludeVersion> struct update_http_request : public st
 	std::string expected_hash;
 	std::string used_cdn_node_address;
 
-	// io_ctx runs on several threads; the deadline and I/O handlers both touch ssl_socket and deadline.
+	// io_ctx runs on several threads; every handler of this request runs on this strand.
 	asio::strand<asio::io_context::executor_type> strand;
 
 	/* We used to support http and then I realized
@@ -66,9 +65,6 @@ template<class Body, bool IncludeVersion> struct update_http_request : public st
 	int deadline_default_timeout = 5;
 	bool deadline_reached = false;
 	int retries = 0;
-
-	// Defense-in-depth: lets an in-flight Asio handler early-out if it runs during teardown
-	std::atomic<bool> destroyed{false};
 
 	void check_deadline_callback_err(const boost::system::error_code &error);
 	void switch_deadline_on();
@@ -127,18 +123,8 @@ update_http_request<Body, IncludeVersion>::update_http_request(update_client *cl
 	deadline.expires_at((std::chrono::steady_clock::time_point::max)());
 }
 
-template<class Body, bool IncludeVersion> update_http_request<Body, IncludeVersion>::~update_http_request()
-{
-	destroyed.store(true, std::memory_order_release);
-	deadline.cancel();
-}
-
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::check_deadline_callback_err(const boost::system::error_code &error)
 {
-	if (destroyed.load(std::memory_order_acquire)) {
-		return;
-	}
-
 	if (error) {
 		if (error == boost::asio::error::operation_aborted) {
 			return;
@@ -164,12 +150,8 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 		ssl_socket.lowest_layer().close(ignored_ec);
 	} else {
 		// Put the actor back to sleep.
-		try {
-			auto self = shared_from_this();
-			deadline.async_wait([self](const boost::system::error_code &ec) { self->check_deadline_callback_err(ec); });
-		} catch (const std::bad_weak_ptr &) {
-			// Object no longer owned by shared_ptr - do not re-arm
-		}
+		auto self = shared_from_this();
+		deadline.async_wait([self](const boost::system::error_code &ec) { self->check_deadline_callback_err(ec); });
 	}
 }
 
@@ -182,9 +164,6 @@ template<class Body, bool IncludeVersion> void update_http_request<Body, Include
 template<class Body, bool IncludeVersion>
 bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const boost::system::error_code &error, const std::string &message)
 {
-	if (destroyed.load(std::memory_order_acquire)) {
-		return true;
-	}
 	deadline.cancel();
 
 	if (client_ctx->update_download_aborted) {
@@ -205,19 +184,22 @@ bool update_http_request<Body, IncludeVersion>::handle_callback_precheck(const b
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::start_connect()
 {
 	auto self = shared_from_this();
-	auto connect_handler = [self](auto e, auto) { self->handle_connect(e); };
 
-	switch_deadline_on();
+	asio::dispatch(strand, [this, self] {
+		auto connect_handler = [self](auto e, auto) { self->handle_connect(e); };
 
-	auto use_node = client_ctx->get_endpoint();
+		switch_deadline_on();
 
-	if (use_node == client_ctx->endpoints.end()) {
-		handle_callback_precheck(boost::asio::error::basic_errors::connection_aborted, "get good cdn node");
-	} else {
-		used_cdn_node_address = (*use_node).endpoint().address().to_string();
+		auto use_node = client_ctx->get_endpoint();
 
-		asio::async_connect(ssl_socket.lowest_layer(), use_node, client_ctx->endpoints.end(), connect_handler);
-	}
+		if (use_node == client_ctx->endpoints.end()) {
+			handle_callback_precheck(boost::asio::error::basic_errors::connection_aborted, "get good cdn node");
+		} else {
+			used_cdn_node_address = (*use_node).endpoint().address().to_string();
+
+			asio::async_connect(ssl_socket.lowest_layer(), use_node, client_ctx->endpoints.end(), connect_handler);
+		}
+	});
 }
 
 template<class Body, bool IncludeVersion> void update_http_request<Body, IncludeVersion>::set_sni_hostname()

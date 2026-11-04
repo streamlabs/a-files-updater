@@ -629,6 +629,8 @@ void update_client::install_package(const std::string &packageName, std::string 
 
 void update_client::set_endpoint_fail(const std::string &used_cdn_node_address)
 {
+	std::lock_guard<std::mutex> lock(endpoint_mutex);
+
 	auto counters = endpoint_fails_counts.find(used_cdn_node_address);
 	if (counters != endpoint_fails_counts.end()) {
 		(*counters).second.first++;
@@ -649,6 +651,8 @@ const std::string update_client::get_endpoint_address_string(resolver_type::resu
 
 tcp::resolver::results_type::iterator update_client::get_endpoint()
 {
+	std::lock_guard<std::mutex> lock(endpoint_mutex);
+
 	auto iter = endpoints.begin();
 	auto ret = endpoints.end();
 	int ret_fails = -1;
@@ -1290,11 +1294,7 @@ template<> void update_http_request<manifest_body, false>::handle_download_error
 
 template<> void update_http_request<http::dynamic_body, true>::handle_download_error(const boost::system::error_code &error, const std::string &str)
 {
-	try {
-		boost::asio::post(client_ctx->io_ctx, [self = shared_from_this(), error, str] { self->client_ctx->handle_file_download_error(self, error, str); });
-	} catch (const std::bad_weak_ptr &) {
-		log_warn("Skipping file download error callback; request is already being torn down");
-	}
+	boost::asio::post(client_ctx->io_ctx, [self = shared_from_this(), error, str] { self->client_ctx->handle_file_download_error(self, error, str); });
 }
 
 template<> void update_http_request<manifest_body, false>::handle_result(update_file_t *file_ctx)
@@ -1305,13 +1305,8 @@ template<> void update_http_request<manifest_body, false>::handle_result(update_
 
 template<> void update_http_request<http::dynamic_body, true>::handle_result(update_file_t *file_ctx)
 {
-	try {
-		boost::asio::post(client_ctx->io_ctx,
-				  [self = shared_from_this(), file_ctx, id = this->worker_id] { self->client_ctx->handle_file_result(self, file_ctx, id); });
-	} catch (const std::bad_weak_ptr &) {
-		log_warn("Skipping file result callback; request is already being torn down");
-		delete file_ctx; // handle_file_result would have owned this; free it since the post didn't happen
-	}
+	boost::asio::post(client_ctx->io_ctx,
+			  [self = shared_from_this(), file_ctx, id = this->worker_id] { self->client_ctx->handle_file_result(self, file_ctx, id); });
 }
 
 template<> void update_http_request<http::dynamic_body, true>::start_reading()
