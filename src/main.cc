@@ -1871,6 +1871,10 @@ void exit_on_init_fail(MultiByteCommandLine &command_line)
 
 extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLineUnused, int nCmdShow)
 {
+	// Launched elevated from a user-writable directory: resolve DLLs from System32 only.
+	if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32))
+		return 1;
+
 	try {
 		setup_locale();
 	} catch (...) {
