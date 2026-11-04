@@ -1931,7 +1931,17 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 
 		auto client_deleter = [](struct update_client *client) { destroy_update_client(client); };
 
-		std::unique_ptr<struct update_client, decltype(client_deleter)> client(create_update_client(&params), client_deleter);
+		std::unique_ptr<struct update_client, decltype(client_deleter)> client(nullptr, client_deleter);
+		try {
+			client.reset(create_update_client(&params));
+		} catch (const std::exception &e) {
+			const char *what = e.what();
+			log_error("Update client initialization failed: %s", (what && *what) ? what : "<no message>");
+			save_exit_error("StartupFailure", "Failed to prepare update");
+			handle_exit();
+			StartApplication(params.exec_no_update.c_str(), params.exec_cwd.c_str());
+			return finish_updater(0);
+		}
 
 		update_client_set_client_events(client.get(), &cb_impl);
 		update_client_set_downloader_events(client.get(), &cb_impl);
