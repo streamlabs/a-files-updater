@@ -1938,6 +1938,7 @@ extern "C" int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpC
 			const char *what = e.what();
 			log_error("Update client initialization failed: %s", (what && *what) ? what : "<no message>");
 			save_exit_error("StartupFailure", "Failed to prepare update");
+			cb_impl.run_hook_repair_ui();
 			handle_exit();
 			StartApplication(params.exec_no_update.c_str(), params.exec_cwd.c_str());
 			return finish_updater(0);
