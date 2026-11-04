@@ -39,6 +39,9 @@ template<class Body, bool IncludeVersion> struct update_http_request : public st
 	std::string expected_hash;
 	std::string used_cdn_node_address;
 
+	// io_ctx runs on several threads; the deadline and I/O handlers both touch ssl_socket and deadline.
+	asio::strand<asio::io_context::executor_type> strand;
+
 	/* We used to support http and then I realized
 	 * I was spending a lot of time supporting both.
 	 * Our use case doesn't use it and boost doesn't
@@ -94,9 +97,10 @@ update_http_request<Body, IncludeVersion>::update_http_request(update_client *cl
 	: worker_id(id),
 	  client_ctx(client_ctx),
 	  target(target),
-	  ssl_socket(client_ctx->io_ctx, client_ctx->ssl_context),
+	  strand(asio::make_strand(client_ctx->io_ctx)),
+	  ssl_socket(strand, client_ctx->ssl_context),
 	  response_buf(file_buffer_size), // see reasons above ^
-	  deadline(client_ctx->io_ctx)
+	  deadline(strand)
 {
 	std::string full_target;
 
