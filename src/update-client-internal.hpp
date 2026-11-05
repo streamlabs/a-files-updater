@@ -99,6 +99,7 @@ struct update_client {
 
 	resolver_type::results_type endpoints;
 	std::map<std::string, std::pair<int, int>> endpoint_fails_counts;
+	std::mutex endpoint_mutex;
 	resolver_type::results_type::iterator get_endpoint();
 	const std::string get_endpoint_address_string(resolver_type::results_type::iterator &iter);
 	void set_endpoint_fail(const std::string &used_cdn_node_address);
@@ -121,7 +122,7 @@ struct update_client {
 	 * publishing half at the end of the update. */
 	HookRepairState hook_state;
 
-	bool update_download_aborted = false;
+	std::atomic<bool> update_download_aborted{false};
 	std::string download_abort_message;
 	boost::system::error_code download_abort_error;
 
