@@ -220,8 +220,8 @@ BOOL StartApplication(const char *lpCommandLine, const char *lpWorkingDir)
 		}
 	}
 
-	delete lpWideCommandLine;
-	delete lpWideWorkingDir;
+	delete[] lpWideCommandLine;
+	delete[] lpWideWorkingDir;
 
 	return bSuccess;
 }
