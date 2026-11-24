@@ -152,7 +152,8 @@ BOOL StartApplication(LPWSTR lpCommandLine, LPCWSTR lpWorkingDirectory)
 	bSuccess = OpenProcessToken(hShellProc, TOKEN_DUPLICATE, &hShellToken);
 
 	if (bSuccess == 0) {
-		LogLastError(L"OpenProcessToken");
+		// Labels here avoid the word "token": Sentry scrubs log lines containing it.
+		LogLastError(L"Open shell user");
 		return FALSE;
 	}
 
@@ -160,14 +161,14 @@ BOOL StartApplication(LPWSTR lpCommandLine, LPCWSTR lpWorkingDirectory)
 				    SecurityImpersonation, TokenPrimary, &hNewToken);
 
 	if (bSuccess == 0) {
-		LogLastError(L"DuplicateTokenEx");
+		LogLastError(L"Duplicate shell user");
 		return FALSE;
 	}
 
 	bSuccess = CreateProcessWithTokenW(hNewToken, 0, NULL, lpCommandLine, 0, NULL, lpWorkingDirectory, &xStartupInfo, &xProcInfo);
 
 	if (bSuccess == 0) {
-		LogLastError(L"CreateProcessWithTokenW");
+		LogLastError(L"Launch as shell user");
 		return FALSE;
 	}
 
