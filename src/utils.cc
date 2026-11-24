@@ -174,6 +174,24 @@ BOOL StartApplication(LPWSTR lpCommandLine, LPCWSTR lpWorkingDirectory)
 	return TRUE;
 }
 
+// ShellExecute takes the program and its arguments separately.
+static void SplitCommandLine(const std::wstring &command_line, std::wstring &file, std::wstring &args)
+{
+	size_t file_end;
+	if (!command_line.empty() && command_line.front() == L'"') {
+		size_t closing_quote = command_line.find(L'"', 1);
+		file = command_line.substr(1, closing_quote == std::wstring::npos ? std::wstring::npos : closing_quote - 1);
+		file_end = closing_quote == std::wstring::npos ? command_line.size() : closing_quote + 1;
+	} else {
+		size_t space = command_line.find(L' ');
+		file_end = space == std::wstring::npos ? command_line.size() : space;
+		file = command_line.substr(0, file_end);
+	}
+
+	size_t args_start = command_line.find_first_not_of(L' ', file_end);
+	args = args_start == std::wstring::npos ? std::wstring() : command_line.substr(args_start);
+}
+
 BOOL StartApplication(const char *lpCommandLine, const char *lpWorkingDir)
 {
 	/* Convert UTF-8 command line back to UTF-16 */
@@ -189,7 +207,9 @@ BOOL StartApplication(const char *lpCommandLine, const char *lpWorkingDir)
 	bSuccess = StartApplication(lpWideCommandLine, lpWideWorkingDir);
 
 	if (!bSuccess) {
-		HINSTANCE exec_result = ShellExecute(NULL, L"runas", lpWideCommandLine, nullptr, NULL, SW_SHOWNORMAL);
+		std::wstring file, args;
+		SplitCommandLine(lpWideCommandLine, file, args);
+		HINSTANCE exec_result = ShellExecute(NULL, L"runas", file.c_str(), args.empty() ? nullptr : args.c_str(), lpWideWorkingDir, SW_SHOWNORMAL);
 
 		int exec_result_code = static_cast<int>(reinterpret_cast<uintptr_t>(exec_result));
 
